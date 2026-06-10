@@ -1,0 +1,39 @@
+name = "oidc-worker-gate"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+[[kv_namespaces]]
+binding = "OIDC_CACHE"
+id = "oidc_cache_placeholder"          # real id set per environment at deploy time
+
+[vars]
+OIDC_ISSUER       = "https://op.test"
+CLIENT_ID         = "test-client"
+REDIRECT_URI      = "https://www.example.com/.auth/callback"
+SCOPES            = "openid profile email groups"
+SESSION_TTL       = "3600"
+ORIGIN_HOSTNAME   = "main--mysite--myorg.aem.live"
+FORWARDED_HOST    = "www.example.com"
+PUSH_INVALIDATION = "enabled"
+ROUTES            = '{"callback":"/.auth/callback","logout":"/.auth/logout"}'
+ACCESS_POLICY     = '''{
+  "rules": [
+    { "path": "/",              "tier": "public" },
+    { "path": "/blog/*",        "tier": "public" },
+    { "path": "/scripts/*",     "tier": "public" },
+    { "path": "/styles/*",      "tier": "public" },
+    { "path": "/blocks/*",      "tier": "public" },
+    { "path": "/icons/*",       "tier": "public" },
+    { "path": "/fonts/*",       "tier": "public" },
+    { "path": "/media_*",       "tier": "public" },
+    { "path": "/*.plain.html",  "tier": "public" },
+    { "path": "/sitemap.xml",   "tier": "public" },
+    { "path": "/robots.txt",    "tier": "public" },
+    { "path": "/.well-known/*", "tier": "public" },
+    { "path": "/members/*",     "tier": "protected", "audience": ["site-readers"] },
+    { "path": "/account/*",     "tier": "protected", "audience": ["site-readers"] },
+    { "path": "/api/*",         "tier": "secured",   "audience": ["site-readers"] },
+    { "path": "/secure-data/*", "tier": "secured",   "audience": ["site-readers"] }
+  ],
+  "default_tier": "protected"
+}'''
