@@ -1,4 +1,4 @@
-import { base64UrlDecode, decodeJsonSegment, base64UrlEncode, utf8 } from "./encoding.js";
+import { base64UrlDecode, decodeJsonSegment, base64UrlEncode, utf8, timingSafeEqual } from "./encoding.js";
 
 const CACHE_TTL_SECONDS = 3600;
 
@@ -47,16 +47,18 @@ export async function verifyIdToken(idToken, config, expectedNonce, hashes = {})
   const skew = 60;
   if (claims.iss !== config.issuer) throw new Error("iss mismatch");                 // N3
   if (!audienceMatches(claims.aud, config.clientId)) throw new Error("aud mismatch"); // N4
+  if (claims.azp !== undefined && claims.azp !== config.clientId) throw new Error("azp mismatch");
   if (Array.isArray(claims.aud) && claims.aud.length > 1 && claims.azp !== config.clientId)
-    throw new Error("azp mismatch for multi-valued aud");                            // N4b
-  if (typeof claims.exp === "number" && claims.exp + skew < now) throw new Error("token expired"); // N5
+    throw new Error("azp required for multi-valued aud");                            // N4b
+  if (typeof claims.exp !== "number" || claims.exp + skew < now) throw new Error("token expired"); // N5
   if (typeof claims.nbf === "number" && claims.nbf - skew > now) throw new Error("token not yet valid");
+  if (typeof claims.iat === "number" && claims.iat - skew > now) throw new Error("token iat in the future");
   if (expectedNonce && claims.nonce !== expectedNonce) throw new Error("nonce mismatch"); // N6
 
   // --- c_hash / at_hash when the corresponding artifact is present (N11) ---
-  if (hashes.code && claims.c_hash && claims.c_hash !== (await leftHalfHash(hashes.code)))
+  if (hashes.code && claims.c_hash && !timingSafeEqual(claims.c_hash, await leftHalfHash(hashes.code)))
     throw new Error("c_hash mismatch");
-  if (hashes.accessToken && claims.at_hash && claims.at_hash !== (await leftHalfHash(hashes.accessToken)))
+  if (hashes.accessToken && claims.at_hash && !timingSafeEqual(claims.at_hash, await leftHalfHash(hashes.accessToken)))
     throw new Error("at_hash mismatch");
 
   return claims;

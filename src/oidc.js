@@ -70,7 +70,7 @@ export class OidcClient {
     }
 
     const sessionCookie = await mintSessionCookie(claims, this.config);
-    const headers = new Headers({ location: safeReturnTo(saved.returnTo) });
+    const headers = new Headers({ location: safeReturnTo(saved.returnTo, url.origin) });
     headers.append("set-cookie", sessionCookie);
     headers.append("set-cookie", clearStateCookie());
     return new Response(null, { status: 302, headers });
@@ -92,9 +92,15 @@ export class OidcClient {
   }
 }
 
-function safeReturnTo(returnTo) {
-  if (typeof returnTo === "string" && returnTo.startsWith("/") && !returnTo.startsWith("//")) return returnTo;
-  return "/";
+function safeReturnTo(returnTo, origin) {
+  if (typeof returnTo !== "string" || !returnTo.startsWith("/")) return "/";
+  try {
+    const resolved = new URL(returnTo, origin);
+    if (resolved.origin !== origin) return "/";   // catches //evil.com and /\evil.com
+    return resolved.pathname + resolved.search;
+  } catch {
+    return "/";
+  }
 }
 
 function errorResponse(status, message) {

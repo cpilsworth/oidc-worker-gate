@@ -13,6 +13,11 @@ export async function forwardToOrigin(request, session, tier, config) {
 
   const headers = new Headers(request.headers);
   headers.delete("cookie"); // never leak the gate session to origin
+  // Strip any client-supplied trusted headers so they cannot be spoofed to the origin.
+  for (const name of [...headers.keys()]) {
+    if (name.toLowerCase().startsWith("x-auth-")) headers.delete(name);
+  }
+  headers.delete("x-push-invalidation");
   headers.set("host", config.originHostname);
   headers.set("x-forwarded-host", config.forwardedHost);
   if (config.pushInvalidation) headers.set("x-push-invalidation", "enabled");

@@ -67,6 +67,41 @@ describe("verifyIdToken — negative matrix", () => {
     await expect(verifyIdToken(t, config, "n1", { accessToken: "atk", code: "code-1" }))
       .rejects.toThrow(/at_hash/);
   });
+  it("M2 single-aud token with wrong azp is rejected", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = await signJwt(
+      { alg: "RS256", kid: op.key.kid, typ: "JWT" },
+      { iss: config.issuer, aud: "test-client", sub: "user-123", groups: ["site-readers"],
+        iat: now, exp: now + 3600, nonce: "n1", azp: "other-client" },
+      op.key.privateKey,
+    );
+    await expect(verifyIdToken(token, config, "n1")).rejects.toThrow(/azp/);
+  });
+});
+
+describe("verifyIdToken — I1 exp required and iat cannot be in the future", () => {
+  it("I1a rejects a token with exp omitted", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    // Sign with the real OP key so signature verifies; only exp is missing.
+    const token = await signJwt(
+      { alg: "RS256", kid: op.key.kid, typ: "JWT" },
+      { iss: config.issuer, aud: "test-client", sub: "user-123", groups: ["site-readers"],
+        iat: now, nonce: "n1" },
+      op.key.privateKey,
+    );
+    await expect(verifyIdToken(token, config, "n1")).rejects.toThrow(/expired/);
+  });
+
+  it("I1b rejects a token with iat far in the future", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = await signJwt(
+      { alg: "RS256", kid: op.key.kid, typ: "JWT" },
+      { iss: config.issuer, aud: "test-client", sub: "user-123", groups: ["site-readers"],
+        iat: now + 100000, exp: now + 3600, nonce: "n1" },
+      op.key.privateKey,
+    );
+    await expect(verifyIdToken(token, config, "n1")).rejects.toThrow(/iat/);
+  });
 });
 
 describe("verifyIdToken — N7 kid rotation (refetch JWKS exactly once)", () => {
