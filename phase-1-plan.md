@@ -8,6 +8,31 @@
 
 **Tech Stack:** Cloudflare Workers + `wrangler`; `vitest` + `@cloudflare/vitest-pool-workers` (tests run in the real `workerd` runtime); Web Crypto (`crypto.subtle`) for RS256 verify + HMAC-SHA256; KV binding `OIDC_CACHE`. No runtime npm dependencies, no `nodejs_compat`.
 
+> **Status: Phase 1 implemented.** All tasks below are complete — 10 `src/*.js` modules + 11
+> vitest files, 59 tests green in `workerd`. See [`README.md`](./README.md) for what the
+> gate does and how to deploy/configure it. This document is retained as the implementation
+> record and the template for executing Phases 2–3.
+
+---
+
+## Roadmap (where Phase 1 sits)
+
+The project splits into three subsystems at very different risk levels. **Build them in
+order** — Phase 1 is a complete, demonstrable RP that depends on **no open questions**;
+Phases 2–3 carry the unresolved identity work and must not block it.
+
+| Phase | Scope | Ships alone? | Blocked on |
+| --- | --- | --- | --- |
+| **1 — Core gate** ✅ | Generic IdP, static `ACCESS_POLICY`, three tiers, single origin `fetch()`, mock-OP tests (P1–P7, N1–N15) | **Yes** | nothing |
+| **2 — IMS as OP** | Swap issuer to IMS, add `/ims/profile/v1` fetch at session-mint, map product-profiles → session entitlements | No (needs Phase 1) | [`folder-authorization.md`](./folder-authorization.md) Q3 |
+| **3 — DA folder-authz** | Control-plane push → KV ACL, unified matcher, last-known-good | No (needs Phase 1) | Q3 + Q4 |
+
+> Building the DA control-plane pipeline (Phase 3) or the IMS profile fetch (Phase 2) before
+> the core gate works — and before Q3 resolves whether the DA ACL names product-profiles or
+> user-groups — is the project's main YAGNI/risk trap. Phase 1 first. Phases 2–3 are
+> milestoned in [`folder-authorization.md`](./folder-authorization.md) once their open
+> questions resolve.
+
 ---
 
 ## How to use this plan (TDD contract)
