@@ -108,6 +108,27 @@ describe("handleCallback", () => {
     expect(second.status).toBe(400);
     expect(getSetCookie(second, SESSION_COOKIE)).toBeNull();
   });
+
+  it("N9 concurrent duplicate callbacks mint at most one session", async () => {
+    const start = await oidc.startLogin(reqFor("/members/x"), new URL("https://www.example.com/members/x"));
+    const loginCookie = getSetCookie(start, "__gate_login");
+    const saved = await readStateCookie(reqFor("/.auth/callback", { cookie: `__gate_login=${loginCookie}` }), config);
+    const authUrl = new URL(start.headers.get("location"));
+    op.issueCode("code-1", { claims: { nonce: saved.nonce }, accessToken: "atk",
+      codeChallenge: authUrl.searchParams.get("code_challenge") });
+    const cbUrl = new URL("https://www.example.com/.auth/callback");
+    cbUrl.searchParams.set("state", saved.state);
+    cbUrl.searchParams.set("code", "code-1");
+    const mk = () => reqFor(cbUrl.pathname + cbUrl.search, { cookie: `__gate_login=${loginCookie}` });
+
+    const results = await Promise.all([
+      oidc.handleCallback(mk(), cbUrl),
+      oidc.handleCallback(mk(), cbUrl),
+    ]);
+
+    const sessionCount = results.filter((res) => getSetCookie(res, SESSION_COOKIE)).length;
+    expect(sessionCount).toBeLessThanOrEqual(1);
+  });
 });
 
 describe("handleLogout (P6)", () => {

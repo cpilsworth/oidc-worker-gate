@@ -8,6 +8,10 @@ describe("cookies", () => {
     expect(parseCookies("a=1; b=two%20words")).toEqual({ a: "1", b: "two words" });
     expect(parseCookies(null)).toEqual({});
   });
+
+  it("skips malformed percent-encoded values without throwing", () => {
+    expect(parseCookies("__gate_session=%; good=1")).toEqual({ good: "1" });
+  });
   it("serializes with security attributes by default", () => {
     const c = serializeCookie("__gate_session", "v", { maxAge: 60 });
     expect(c).toContain("__gate_session=v");
@@ -21,5 +25,12 @@ describe("cookies", () => {
     expect(await unsign(token, KEY)).toBe('{"sub":"x"}');
     expect(await unsign(token + "x", KEY)).toBeNull();
     expect(await unsign(token, "wrong-key")).toBeNull();
+  });
+
+  it("unsign returns null for garbage tokens without throwing", async () => {
+    await expect(unsign("not-valid-base64!!!", KEY)).resolves.toBeNull();
+    await expect(unsign(".", KEY)).resolves.toBeNull();
+    await expect(unsign("payload-only.", KEY)).resolves.toBeNull();
+    await expect(unsign("", KEY)).resolves.toBeNull();
   });
 });

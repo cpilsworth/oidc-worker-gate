@@ -66,6 +66,7 @@ export async function createMockOp({ issuer = "https://op.test", clientId = "tes
       const form = new URLSearchParams(await request.text());
       const rec = codes.get(form.get("code"));
       if (!rec) return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+      codes.delete(form.get("code")); // authorization codes are one-time credentials
       // PKCE check: S256(code_verifier) must equal the registered challenge.
       if (rec.codeChallenge) {
         const v = form.get("code_verifier") || "";

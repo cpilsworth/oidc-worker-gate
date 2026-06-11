@@ -17,6 +17,7 @@
   "allowScripts": {
     "esbuild@0.27.3": true,
     "sharp@0.34.5": true,
-    "workerd@1.20260609.1": true
+    "workerd@1.20260609.1": true,
+    "fsevents@2.3.3": true
   }
 }

@@ -35,7 +35,7 @@ describe("forwardToOrigin — client header spoofing (C1)", () => {
   });
 
   it("C1b protected tier: inbound x-auth-name and x-auth-roles are stripped; gate-managed headers are set", async () => {
-    const session = { sub: "user-123", email: "u@example.com", groups: ["site-readers"] };
+    const session = { sub: "user-123", groups: ["site-readers"] };
     const req = reqFor("/members/x", {
       headers: {
         "x-auth-name": "spoof",
@@ -47,7 +47,6 @@ describe("forwardToOrigin — client header spoofing (C1)", () => {
     expect(seen.headers.get("x-auth-roles")).toBeNull();
     // Gate-managed headers must still reach origin.
     expect(seen.headers.get("x-auth-subject")).toBe("user-123");
-    expect(seen.headers.get("x-auth-email")).toBe("u@example.com");
     expect(seen.headers.get("x-auth-groups")).toBe("site-readers");
   });
 
@@ -63,12 +62,11 @@ describe("forwardToOrigin — client header spoofing (C1)", () => {
 
 describe("forwardToOrigin", () => {
   it("P3 forwards to the EDS origin with x-auth-* and strips the cookie", async () => {
-    const session = { sub: "user-123", email: "u@example.com", groups: ["site-readers"] };
+    const session = { sub: "user-123", groups: ["site-readers"] };
     await forwardToOrigin(reqFor("/members/x", { cookie: "__gate_session=abc" }), session, "protected", config);
     expect(new URL(seen.url).hostname).toBe("main--mysite--myorg.aem.live");
     expect(seen.headers.get("cookie")).toBeNull();
     expect(seen.headers.get("x-auth-subject")).toBe("user-123");
-    expect(seen.headers.get("x-auth-email")).toBe("u@example.com");
     expect(seen.headers.get("x-auth-groups")).toBe("site-readers");
     expect(seen.headers.get("x-forwarded-host")).toBe("www.example.com");
     expect(seen.headers.get("x-push-invalidation")).toBe("enabled");
@@ -84,5 +82,25 @@ describe("forwardToOrigin", () => {
     const res = await forwardToOrigin(reqFor("/blog/post"), null, "public", config);
     expect(res.headers.get("cache-control")).toBe("public, max-age=3600");
     expect(seen.headers.get("x-auth-subject")).toBeNull();
+  });
+
+  it("strips origin Set-Cookie entries for gate-owned cookie names", async () => {
+    globalThis.fetch = async (input, init) => {
+      const r = input instanceof Request ? input : new Request(input, init);
+      seen = { url: r.url, headers: r.headers };
+      return new Response("body", {
+        headers: [
+          ["set-cookie", "__gate_session=attacker; Path=/"],
+          ["set-cookie", "__gate_login=attacker; Path=/"],
+          ["set-cookie", "eds_pref=ok; Path=/"],
+        ],
+      });
+    };
+
+    const res = await forwardToOrigin(reqFor("/members/x"), { sub: "x", groups: [] }, "protected", config);
+    const setCookies = res.headers.getSetCookie ? res.headers.getSetCookie() : [res.headers.get("set-cookie")];
+    expect(setCookies.join("\n")).not.toContain("__gate_session=");
+    expect(setCookies.join("\n")).not.toContain("__gate_login=");
+    expect(setCookies.join("\n")).toContain("eds_pref=ok");
   });
 });
