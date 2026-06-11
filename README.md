@@ -7,11 +7,12 @@ users against any standards-compliant OpenID Provider (Okta, Entra ID, Ping, Aut
 IMS, …), and enforces access **before** anything reaches the origin — without the EDS
 project itself knowing anything about OIDC.
 
-> **Status: Phase 1 implemented** — 10 source modules, 11 test files, **59 tests passing**
+> **Status: Phase 1 implemented** — 10 source modules, 11 test files, **72 tests passing**
 > in the real `workerd` runtime. This is a research / reference implementation (see
 > [Limitations](#limitations)). The multi-phase roadmap and the implementation record live
 > in [`phase-1-plan.md`](./phase-1-plan.md); identity/folder-authz design is in
 > [`folder-authorization.md`](./folder-authorization.md).
+> Auth0 setup guide: [`auth0-setup.md`](./auth0-setup.md).
 
 ## What it does
 
@@ -189,7 +190,7 @@ All non-secret config is `wrangler.toml` `[vars]`; two values are secrets.
 
 | Variable | Example | Purpose |
 | --- | --- | --- |
-| `OIDC_ISSUER` | `https://your-tenant.okta.com` | OP issuer; discovery is fetched from `<issuer>/.well-known/openid-configuration`. Trailing slash trimmed. |
+| `OIDC_ISSUER` | `https://your-tenant.okta.com` | OP issuer; discovery is fetched from `<issuer>/.well-known/openid-configuration`. Trailing slash trimmed. The worker also normalises a trailing slash in the `iss` claim of incoming tokens, so providers such as Auth0 that append a trailing slash to `iss` work without adjustment. |
 | `CLIENT_ID` | `0oaEXAMPLEclientid` | Registered confidential-client id. |
 | `REDIRECT_URI` | `https://www.example.com/.auth/callback` | Must match the gate's callback route and be allowlisted at the IdP. |
 | `SCOPES` | `openid profile email groups` | Space-delimited scopes requested at authorize. |
@@ -245,6 +246,12 @@ ACCESS_POLICY = '''{
 > Verify the exact infra path set for your project against the EDS docs. `default_tier`
 > then applies only to content routes.
 
+> **Auth0** works as the OP via the generic flow. Auth0 silently drops non-namespaced custom
+> claims from tokens, so roles must be injected under a namespaced key
+> (`https://oidc.workers.dev/groups`) via a Post Login Action. The worker reads this
+> namespaced claim first, then falls back to `groups` / `roles` for other providers. See
+> [`auth0-setup.md`](./auth0-setup.md) for the full setup including the required Action code.
+
 > **Adobe IMS** works as the OP via the generic flow, but IMS does **not** emit a `groups`
 > claim in the `id_token` — entitlements require a post-login profile lookup and a
 > product-profile↔group mapping. That is **Phase 2**, deliberately out of the core gate; see
@@ -274,8 +281,8 @@ The worker forwards public/authenticated requests to the EDS origin per AEM's
 - Fetch `https://${ORIGIN_HOSTNAME}…` with the outbound **`Host` set to `ORIGIN_HOSTNAME`**.
 - Send **`X-Forwarded-Host: ${FORWARDED_HOST}`** so EDS emits correct canonicals/sitemaps/redirects.
 - Send **`X-Push-Invalidation: enabled`** on production so content updates invalidate the CF cache.
-- **Strip the inbound `Cookie`** before forwarding; inject `x-auth-subject` / `x-auth-email`
-  / `x-auth-groups` for the authenticated identity, plus `x-auth-request-id` for
+- **Strip the inbound `Cookie`** before forwarding; inject `x-auth-subject` /
+  `x-auth-groups` for the authenticated identity, plus `x-auth-request-id` for
   edge↔origin correlation. The gate **deletes any client-supplied `x-auth-*` and
   `x-push-invalidation` headers on every tier** before injecting its own, so a caller can't
   spoof identity. The origin must still only trust `x-auth-*` when reached *through* the
@@ -352,5 +359,6 @@ distributed to the worker via KV. See the roadmap table and implementation recor
 Research / reference implementation, not a hardened product. Only the `id_token` is
 validated (access/refresh tokens are not persisted — add refresh handling for long-lived
 sessions). Revocation is time-based. Single-use state replay protection is best-effort (CF
-KV is eventually consistent). The `x-auth-*` origin-trust boundary must be enforced
+KV is eventually consistent) — see [`state-replay-do.md`](./state-replay-do.md) for a
+strict Durable Object design. The `x-auth-*` origin-trust boundary must be enforced
 operationally at the EDS origin.

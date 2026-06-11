@@ -45,13 +45,15 @@ export async function verifyIdToken(idToken, config, expectedNonce, hashes = {})
   // --- claims ---
   const now = Math.floor(Date.now() / 1000);
   const skew = 60;
-  if (claims.iss !== config.issuer) throw new Error("iss mismatch");                 // N3
+  if (claims.iss.replace(/\/$/, "") !== config.issuer) throw new Error("iss mismatch"); // N3
   if (!audienceMatches(claims.aud, config.clientId)) throw new Error("aud mismatch"); // N4
   if (claims.azp !== undefined && claims.azp !== config.clientId) throw new Error("azp mismatch");
   if (Array.isArray(claims.aud) && claims.aud.length > 1 && claims.azp !== config.clientId)
     throw new Error("azp required for multi-valued aud");                            // N4b
+  if (typeof claims.sub !== "string" || claims.sub.length === 0) throw new Error("sub required");
   if (typeof claims.exp !== "number" || claims.exp + skew < now) throw new Error("token expired"); // N5
   if (typeof claims.nbf === "number" && claims.nbf - skew > now) throw new Error("token not yet valid");
+  if (typeof claims.iat !== "number") throw new Error("iat required");
   if (typeof claims.iat === "number" && claims.iat - skew > now) throw new Error("token iat in the future");
   if (expectedNonce && claims.nonce !== expectedNonce) throw new Error("nonce mismatch"); // N6
 

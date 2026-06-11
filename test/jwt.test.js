@@ -46,6 +46,17 @@ describe("verifyIdToken — negative matrix", () => {
     await expect(verifyIdToken(await tokenFromMock({ nonce: "n1", broken: "wrong-iss" }), config, "n1"))
       .rejects.toThrow(/iss/);
   });
+  it("N3 iss with trailing slash is accepted (Auth0 issuer format)", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = await signJwt(
+      { alg: "RS256", kid: op.key.kid, typ: "JWT" },
+      { iss: config.issuer + "/", aud: "test-client", sub: "user-123", groups: ["site-readers"],
+        iat: now, exp: now + 3600, nonce: "n1" },
+      op.key.privateKey,
+    );
+    const claims = await verifyIdToken(token, config, "n1");
+    expect(claims.sub).toBe("user-123");
+  });
   it("N4 wrong aud", async () => {
     await expect(verifyIdToken(await tokenFromMock({ nonce: "n1", broken: "wrong-aud" }), config, "n1"))
       .rejects.toThrow(/aud/);
@@ -98,6 +109,28 @@ describe("verifyIdToken — I1 exp required and iat cannot be in the future", ()
       { alg: "RS256", kid: op.key.kid, typ: "JWT" },
       { iss: config.issuer, aud: "test-client", sub: "user-123", groups: ["site-readers"],
         iat: now + 100000, exp: now + 3600, nonce: "n1" },
+      op.key.privateKey,
+    );
+    await expect(verifyIdToken(token, config, "n1")).rejects.toThrow(/iat/);
+  });
+
+  it("I1c rejects a token with sub omitted", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = await signJwt(
+      { alg: "RS256", kid: op.key.kid, typ: "JWT" },
+      { iss: config.issuer, aud: "test-client", groups: ["site-readers"],
+        iat: now, exp: now + 3600, nonce: "n1" },
+      op.key.privateKey,
+    );
+    await expect(verifyIdToken(token, config, "n1")).rejects.toThrow(/sub/);
+  });
+
+  it("I1d rejects a token with iat omitted", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = await signJwt(
+      { alg: "RS256", kid: op.key.kid, typ: "JWT" },
+      { iss: config.issuer, aud: "test-client", sub: "user-123", groups: ["site-readers"],
+        exp: now + 3600, nonce: "n1" },
       op.key.privateKey,
     );
     await expect(verifyIdToken(token, config, "n1")).rejects.toThrow(/iat/);

@@ -65,6 +65,7 @@ export class OidcClient {
     try {
       claims = await verifyIdToken(tokens.id_token, this.config, saved.nonce,
         { code, accessToken: tokens.access_token });
+
     } catch (e) {
       return errorResponse(400, `ID token validation failed: ${e.message}`);
     }
