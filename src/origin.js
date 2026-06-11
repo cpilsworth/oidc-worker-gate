@@ -7,6 +7,8 @@
  * @param {string} tier          "public" | "protected" | "secured"
  * @param {import("./policy.js").Config} config
  */
+const GATE_COOKIE_NAMES = new Set(["__gate_session", "__gate_login"]);
+
 export async function forwardToOrigin(request, session, tier, config) {
   const inUrl = new URL(request.url);
   const originUrl = `https://${config.originHostname}${inUrl.pathname}${inUrl.search}`;
@@ -24,7 +26,6 @@ export async function forwardToOrigin(request, session, tier, config) {
 
   if (session) {
     headers.set("x-auth-subject", session.sub || "");
-    headers.set("x-auth-email", session.email || "");
     headers.set("x-auth-groups", Array.isArray(session.groups) ? session.groups.join(",") : "");
   }
   // Edge↔origin correlation (see README Observability).
@@ -39,10 +40,25 @@ export async function forwardToOrigin(request, session, tier, config) {
   });
 
   const res = await fetch(forwarded);
-  if (!cacheOff) return res;
-
   const out = new Response(res.body, res);
+  stripGateSetCookies(out.headers);
+  if (!cacheOff) return out;
+
   out.headers.set("cache-control", "private, no-store");
   out.headers.delete("age");
   return out;
+}
+
+function stripGateSetCookies(headers) {
+  const setCookies = headers.getSetCookie ? headers.getSetCookie() : [headers.get("set-cookie")].filter(Boolean);
+  if (setCookies.length === 0) return;
+
+  headers.delete("set-cookie");
+  for (const line of setCookies) {
+    if (!GATE_COOKIE_NAMES.has(cookieName(line))) headers.append("set-cookie", line);
+  }
+}
+
+function cookieName(setCookieLine) {
+  return setCookieLine.slice(0, setCookieLine.indexOf("=")).trim();
 }
