@@ -161,8 +161,11 @@ cd oidc-worker-gate
 npm install
 ```
 
-**1. Create the KV namespace** (caches OIDC discovery + JWKS) and copy the returned id into
-`wrangler.toml` under `[[kv_namespaces]]` `id`:
+**1. Create the KV namespace** (`OIDC_CACHE` — caches OIDC discovery + JWKS, holds the signed
+policy snapshots `policy:current/version/status:<site-id>`, and records single-use login
+`state` markers) and copy the returned id into the `[[kv_namespaces]]` `id` of **both**
+`wrangler.toml` and `wrangler.publisher.toml` (the publisher writes the snapshots the
+delivery worker reads):
 
 ```bash
 npx wrangler kv namespace create OIDC_CACHE
@@ -268,11 +271,28 @@ path	tier	audience	description
 unauthenticated response: `protected` redirects to login, while `secured` returns `401`
 JSON.
 
+**Audience vocabulary.** Names in the `audience` column must be known audience names — the
+keys of the publisher's per-site `audience_map` (in `PUBLISHER_SITES`); an unknown name is a
+publish error. At request time the delivery worker maps the IdP's raw groups/roles (read from
+the single `GROUPS_CLAIM`) into those same names via `AUDIENCE_MAP`, then intersects the
+result with the matched rule's `audience`. So `audience_map` keys (publisher) and
+`AUDIENCE_MAP` keys (delivery) must agree on the audience names.
+
+**DA references:** [permissions guide](https://docs.da.live/administrators/guides/permissions)
+· [access-control reference](https://docs.da.live/developers/reference/access-control).
+
 ## Policy Publishing
 
 The publisher is a separate Cloudflare Worker. It receives a refresh request with a DA
 Bearer token, reads the DA config document itself, validates the `access-control` sheet,
 signs the normalized policy, and writes it to KV.
+
+**Request contract.** `POST` to the publisher with `Authorization: Bearer <DA token>` and a
+JSON body identifying the site — either `{"site_id":"org/site"}` or `{"org":"…","site":"…"}`,
+plus an optional `source_version`. The site must be allow-listed in `PUBLISHER_SITES` (else
+`403`); the publisher treats the request only as a trigger and re-reads the DA source itself
+(it never trusts policy content from the request body). `OPTIONS` is handled for CORS from
+the EDS/DA origins; other methods return `405`.
 
 KV keys:
 
@@ -347,8 +367,27 @@ Publisher worker variables in `wrangler.publisher.toml`:
 
 | Variable | Example | Purpose |
 | --- | --- | --- |
-| `DA_BASE_URL` | `https://admin.da.live/config` | Base URL used to read DA site config. |
-| `PUBLISHER_SITES` | `{"cpilsworth/authz":{"audience_map":{"medical":["medical"]}}}` | Allow-listed sites and their audience maps. |
+| `DA_BASE_URL` | `https://admin.da.live/config` | Base URL used to read the DA site config. |
+| `PUBLISHER_SITES` | _(JSON, below)_ | Allow-list of sites the publisher may publish, each with its audience vocabulary and (optionally) its reserved paths. |
+
+`PUBLISHER_SITES` maps each allow-listed `org/site` to its config. `audience_map` is
+required (its **keys** are the valid audience names a DA sheet may reference — values are
+informational); `worker_managed_paths` is optional and overrides the default reserved-path
+list for that site:
+
+```toml
+PUBLISHER_SITES = '''{
+  "cpilsworth/authz": {
+    "audience_map": { "medical": ["medical"], "secure": ["secure"], "market-access": ["market-access"] },
+    "worker_managed_paths": ["/.auth/**", "/scripts/**", "/styles/**"]
+  }
+}'''
+```
+
+The publisher worker also needs the **`OIDC_CACHE` KV binding** (the same namespace as the
+delivery worker — it writes `policy:current/version/status:<site-id>`) and the
+**`POLICY_HMAC_KEY` secret** (identical to the delivery worker's, so the signed snapshot
+verifies). A request fails fast with `500` if either is missing.
 
 ### Secrets (`wrangler secret put`)
 
@@ -365,6 +404,24 @@ openssl rand -base64 32
 npx wrangler secret put POLICY_HMAC_KEY
 npx wrangler secret put POLICY_HMAC_KEY --config wrangler.publisher.toml
 ```
+
+### CLI / `.env` (publish, refresh & status scripts)
+
+The `npm run refresh-policy`, `publish-policy`, and `policy-status` commands read these from
+a local `.env` (copied from `.env.example`, git-ignored). They are **not** worker config —
+see [`operations.md`](./operations.md) for the workflow.
+
+| Variable | Used by | Purpose |
+| --- | --- | --- |
+| `DA_TOKEN` | refresh, publish | Bearer token to read the DA `access-control` document; scope it to that document. |
+| `POLICY_SITE_ID` | refresh, publish, status | DA site id in `org/site` format. |
+| `POLICY_PUBLISHER_URL` | refresh | URL of the deployed publisher worker the refresh request is `POST`ed to. |
+| `DA_BASE_URL` | publish | DA config base URL (default `https://admin.da.live/config`). |
+| `POLICY_HMAC_KEY` | publish | Signing key for the **direct-to-KV** publish fallback (must match the workers'). |
+| `AUDIENCE_MAP` | publish | Audience-name vocabulary used to validate DA rows on direct publish (optional). |
+| `CLOUDFLARE_ACCOUNT_ID` | publish, status | Account id for direct KV writes/reads. |
+| `KV_NAMESPACE_ID` | publish, status | `OIDC_CACHE` namespace id. |
+| `CLOUDFLARE_API_TOKEN` | publish, status | API token scoped to the target account + KV namespace. |
 
 ### `POLICY_SOURCE`
 
