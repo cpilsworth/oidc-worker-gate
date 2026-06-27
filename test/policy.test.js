@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classify, isAuthorized } from "../src/policy.js";
+import { classify, isAuthorized, matchesAny } from "../src/policy.js";
 
 const policy = {
   rules: [
@@ -40,6 +40,20 @@ describe("classify", () => {
   });
   it("unmatched path falls to default_tier with no audience", () => {
     expect(classify("/totally/new/route", policy)).toEqual({ tier: "protected", audience: undefined });
+  });
+});
+
+describe("matchesAny (worker-managed paths, S4)", () => {
+  const patterns = ["/.auth/**", "/scripts/**", "/media_*", "/robots.txt"];
+  it("matches recursive, single-star and exact patterns", () => {
+    expect(matchesAny(patterns, "/.auth/callback")).toBe(true);
+    expect(matchesAny(patterns, "/scripts/app.js")).toBe(true);
+    expect(matchesAny(patterns, "/media_abc.png")).toBe(true);
+    expect(matchesAny(patterns, "/robots.txt")).toBe(true);
+  });
+  it("does not match unrelated paths and tolerates non-arrays", () => {
+    expect(matchesAny(patterns, "/members/x")).toBe(false);
+    expect(matchesAny(undefined, "/x")).toBe(false);
   });
 });
 

@@ -147,3 +147,11 @@ Expected unauthenticated behavior:
   policy within the stale TTL, otherwise falls back to static worker policy.
 - DA rows overlapping worker-managed paths are ignored and logged by the publisher; those
   paths remain owned by the worker.
+- A site-wide `public /**` row is rejected at publish time (validation failure, current
+  policy not overwritten); a top-level `public /*` row publishes with a warning.
+- Misconfiguration fails fast: the worker throws at startup if `SESSION_HMAC_KEY` /
+  `POLICY_HMAC_KEY` are shorter than 32 bytes, or if `SESSION_TTL` /
+  `POLICY_REFRESH_TTL_SECONDS` / `POLICY_STALE_TTL_SECONDS` are not positive integers —
+  surfacing the error immediately rather than as a silent login loop.
+- Login fails closed without KV: if `OIDC_CACHE` is unbound, the OIDC callback returns `503`
+  (single-use `state` cannot be guaranteed) rather than minting a session.

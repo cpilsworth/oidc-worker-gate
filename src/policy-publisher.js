@@ -50,6 +50,14 @@ export function compilePolicyRows(rows, options) {
     if (!TIERS.has(tier)) errors.push({ row: rowNumber, field: "tier", message: `invalid tier: ${tier}` });
     if (tier === "public" && audience.length > 0)
       errors.push({ row: rowNumber, field: "audience", message: "public rows must not specify audience" });
+    // Deny-by-default guard (H2): a DA author must not be able to silently make
+    // the whole site public. A site-wide `/**` public rule is rejected outright;
+    // a top-level `/*` public rule is allowed but surfaced as a warning so the
+    // breadth is never silent.
+    if (tier === "public" && path === "/**")
+      errors.push({ row: rowNumber, field: "path", message: "public /** would expose the entire site; scope public paths explicitly" });
+    else if (tier === "public" && path === "/*")
+      warnings.push({ row: rowNumber, field: "path", message: "public /* exposes all top-level paths" });
     if ((tier === "protected" || tier === "secured") && audience.length === 0)
       warnings.push({ row: rowNumber, field: "audience", message: `${tier} row allows any authenticated user` });
 

@@ -14,23 +14,28 @@ Builds on [`README.md`](./README.md) (OIDC callback flow) and
 
 During the authorization-code flow the worker:
 
-1. Mints random `state` at login start and stores it in the signed `__gate_login` cookie.
+1. Mints random `state` at login start and stores it in the signed `__Host-gate_login` cookie.
 2. Redirects the browser to the IdP.
 3. On `/.auth/callback`, compares the returned `state` query param to the cookie value.
-4. Exchanges the `code` for tokens and mints `__gate_session`.
+4. Exchanges the `code` for tokens and mints `__Host-gate_session`.
 
 **N9** requires that the same callback (same `state` + `code` + login cookie) cannot be
 processed twice. A replay could otherwise mint a second session or amplify a stolen
 callback URL.
 
-### Current implementation (KV, best-effort)
+### Current implementation (KV, best-effort, fail-closed when unbound)
 
 ```js
 // src/oidc.js — simplified
+if (!this.config.kv) return fail(req, 503, "login_unavailable", "state_store_unbound");
 const usedKey = `state-used:${saved.state}`;
-if (await kv.get(usedKey)) return 400;
-await kv.put(usedKey, "1", { expirationTtl: 600 });
+if (await kvGetFresh(this.config.kv, usedKey)) return fail(req, 400, "invalid_login", "state_replayed");
+await kvPutWithTtl(this.config.kv, usedKey, true, 600);
 ```
+
+The KV access goes through the shared `kvGetFresh` / `kvPutWithTtl` helpers (`src/kv.js`),
+which wrap values as `{ value, expires }`. Note the callback now **fails closed (`503`)** when
+the KV store is unbound rather than skipping the single-use check.
 
 ### Why KV is insufficient for *strict* single-use
 
@@ -38,7 +43,7 @@ await kv.put(usedKey, "1", { expirationTtl: 600 });
 | --- | --- | --- |
 | Consistency | Eventually consistent across PoPs | **Linearizable** read-modify-write |
 | Atomicity | `get` then `put` is two ops | **Consume once** atomically |
-| Optional today | Skipped if `OIDC_CACHE` unbound | Should fail closed in production |
+| Binding requirement | Fails closed (`503`) if `OIDC_CACHE` unbound (H5) | Same — already met for the unbound case |
 
 **Sequential replay** is already mitigated in practice:
 
@@ -61,9 +66,9 @@ guarantee for this pattern.
 | User double-clicks callback / browser retries | Low — sequential | KV marker + IdP code reuse |
 | Attacker replays captured callback URL quickly | Medium — depends on timing | KV + IdP code; race possible |
 | Attacker replays concurrent duplicate requests | Medium — race window | IdP code only (if exchange is serial) |
-| No KV binding in deployment | High — no worker-side N9 | IdP code only |
+| No KV binding in deployment | None — callback fails closed (`503`), no session minted | Fail-closed (H5) + IdP code |
 
-**Out of scope for this design:** stealing the `__gate_login` cookie before first use
+**Out of scope for this design:** stealing the `__Host-gate_login` cookie before first use
 (that is a broader session-fixation / XSS problem). This design only ensures **one successful
 consume per `state` value** at the worker.
 
@@ -81,7 +86,7 @@ consume per `state` value** at the worker.
 
 Non-goals:
 
-- Replacing the signed `__gate_login` cookie (still carries `nonce`, PKCE verifier, `returnTo`).
+- Replacing the signed `__Host-gate_login` cookie (still carries `nonce`, PKCE verifier, `returnTo`).
 - Moving discovery/JWKS cache off KV (`OIDC_CACHE` stays KV).
 - Solving refresh-token or `jti` denylist revocation (separate concern).
 
@@ -95,13 +100,13 @@ exactly one consume decision for that login attempt.
 ```
 startLogin                    handleCallback
     │                              │
-    ├─ mint state (random)         ├─ read __gate_login cookie
+    ├─ mint state (random)         ├─ read __Host-gate_login cookie
     ├─ sign cookie                 ├─ verify state param == cookie
     └─ 302 → IdP                   │
                                    ├─ DO.consume(state)  ──▶  LoginState DO
                                    │       atomic: first OK, rest 409
                                    ├─ token exchange + id_token verify
-                                   └─ mint __gate_session
+                                   └─ mint __Host-gate_session
 ```
 
 ### Why per-state DO (not one global DO)
@@ -211,7 +216,9 @@ loginState: env.LOGIN_STATE,  // required in production
 ```
 
 **Fail closed:** if `LOGIN_STATE` is missing at callback time, return `500` or `400` with a
-clear operator-facing reason — do not silently skip consume (today's KV path is optional).
+clear operator-facing reason — do not silently skip consume. (The current KV path already
+fails closed with `503` when `OIDC_CACHE` is unbound; the DO adds strict concurrent
+linearizability on top of that.)
 
 ### Cost / scale
 
@@ -259,7 +266,7 @@ Update [`conformance-testing.md`](./conformance-testing.md) N9 row to distinguis
 
 | Phase | Deliverable |
 | --- | --- |
-| **1 (current)** | KV best-effort; document limitation |
+| **1 (current)** | KV best-effort (fails closed when unbound); document limitation |
 | **1.5 (this design)** | Add `LoginState` DO; require binding in production; keep KV for JWKS only |
 | **2+** | No change to DO consume path unless adding multi-region custom semantics |
 

@@ -116,6 +116,31 @@ describe("policy publisher compiler", () => {
     ]);
   });
 
+  it("H2 rejects a site-wide public rule that would disable the gate", () => {
+    const result = compilePolicyRows([
+      { path: "/**", tier: "public", audience: "" },
+    ], options());
+
+    expect(result.errors).toEqual([
+      { row: 2, field: "path", message: "public /** would expose the entire site; scope public paths explicitly" },
+    ]);
+    expect(result.payload.rules).toEqual([]);
+  });
+
+  it("H2 warns (but allows) a top-level public /* rule", () => {
+    // Empty reserved set so /* isn't swallowed as a reserved-path overlap
+    // (it overlaps any single-segment infra path like /robots.txt or /.auth/**).
+    const result = compilePolicyRows([
+      { path: "/*", tier: "public", audience: "" },
+    ], options({ workerManagedPaths: [] }));
+
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContainEqual(
+      { row: 2, field: "path", message: "public /* exposes all top-level paths" },
+    );
+    expect(result.payload.rules).toEqual([{ path: "/*", tier: "public" }]);
+  });
+
   it("extracts rows from common DA document shapes", () => {
     const rows = [{ path: "/members/**", tier: "protected" }];
     expect(extractRowsFromDaDocument(rows)).toBe(rows);

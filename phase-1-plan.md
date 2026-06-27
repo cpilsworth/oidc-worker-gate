@@ -1,5 +1,15 @@
 # oidc-worker-gate Phase 1 — TDD Implementation Plan
 
+> **Historical record.** This is the Phase 1 implementation plan as originally written; its
+> code listings and tests predate a later security-hardening pass. Several specifics have since
+> changed — cookie names are now `__Host-`-prefixed (`__Host-gate_session` / `__Host-gate_login`),
+> request paths are canonicalized before classification, the callback fails closed when KV is
+> unbound, error responses are generic JSON with a `request_id`, config invariants (≥32-byte HMAC
+> keys, positive-integer TTLs) and discovery validation are enforced, RP-initiated logout is
+> POST-only with `id_token_hint`, and the DA publisher rejects a site-wide `public /**`. For
+> current behavior see [`README.md`](./README.md) and [`conformance-testing.md`](./conformance-testing.md);
+> this document is left unchanged as a record of what Phase 1 built.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the Phase 1 "core gate" — a Cloudflare Worker that fronts an AEM EDS origin as an OIDC relying party, classifying each request into `public` / `protected` / `secured` and enforcing access locally via an HMAC session cookie.

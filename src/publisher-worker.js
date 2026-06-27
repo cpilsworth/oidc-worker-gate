@@ -4,6 +4,7 @@ import {
   publishPolicyRows,
 } from "./policy-publisher.js";
 import { DEFAULT_WORKER_MANAGED_PATHS } from "./policy-defaults.js";
+import { securityHeaders } from "./http.js";
 
 const ALLOWED_CORS_ORIGINS = [
   /^https:\/\/([a-z0-9-]+--)?authz--cpilsworth\.aem\.(live|page)$/,
@@ -154,10 +155,9 @@ function corsHeaders(request) {
 function json(request, body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
+    headers: securityHeaders({
       "content-type": "application/json; charset=utf-8",
-      "cache-control": "private, no-store",
       ...corsHeaders(request),
-    },
+    }),
   });
 }

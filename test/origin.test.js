@@ -63,7 +63,7 @@ describe("forwardToOrigin — client header spoofing (C1)", () => {
 describe("forwardToOrigin", () => {
   it("P3 forwards to the EDS origin with x-auth-* and strips the cookie", async () => {
     const session = { sub: "user-123", groups: ["site-readers"] };
-    await forwardToOrigin(reqFor("/members/x", { cookie: "__gate_session=abc" }), session, "protected", config);
+    await forwardToOrigin(reqFor("/members/x", { cookie: "__Host-gate_session=abc" }), session, "protected", config);
     expect(new URL(seen.url).hostname).toBe("main--mysite--myorg.aem.live");
     expect(seen.headers.get("cookie")).toBeNull();
     expect(seen.headers.get("x-auth-subject")).toBe("user-123");
@@ -90,8 +90,8 @@ describe("forwardToOrigin", () => {
       seen = { url: r.url, headers: r.headers };
       return new Response("body", {
         headers: [
-          ["set-cookie", "__gate_session=attacker; Path=/"],
-          ["set-cookie", "__gate_login=attacker; Path=/"],
+          ["set-cookie", "__Host-gate_session=attacker; Path=/"],
+          ["set-cookie", "__Host-gate_login=attacker; Path=/"],
           ["set-cookie", "eds_pref=ok; Path=/"],
         ],
       });
@@ -99,8 +99,8 @@ describe("forwardToOrigin", () => {
 
     const res = await forwardToOrigin(reqFor("/members/x"), { sub: "x", groups: [] }, "protected", config);
     const setCookies = res.headers.getSetCookie ? res.headers.getSetCookie() : [res.headers.get("set-cookie")];
-    expect(setCookies.join("\n")).not.toContain("__gate_session=");
-    expect(setCookies.join("\n")).not.toContain("__gate_login=");
+    expect(setCookies.join("\n")).not.toContain("__Host-gate_session=");
+    expect(setCookies.join("\n")).not.toContain("__Host-gate_login=");
     expect(setCookies.join("\n")).toContain("eds_pref=ok");
   });
 });

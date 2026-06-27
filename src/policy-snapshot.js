@@ -50,21 +50,24 @@ export async function loadRuntimePolicy(config, nowMs = Date.now()) {
 
   const key = policyCacheKey(config.policySiteId);
   const cached = cache.get(key);
-  if (cached?.payload && nowMs - cached.refreshedAt < config.policyRefreshTtlSeconds * 1000) {
-    return policyFromPayload(cached.payload, config);
+  if (cached?.policyObj && nowMs - cached.refreshedAt < config.policyRefreshTtlSeconds * 1000) {
+    return { policy: cached.policyObj, source: "kv", version: cached.payload.version };
   }
 
   try {
     const raw = await config.kv.get(key);
     if (!raw) throw new Error("policy snapshot missing");
     const payload = await verifyPolicyEnvelope(JSON.parse(raw), config);
-    cache.set(key, { payload, refreshedAt: nowMs });
+    // Derive the runtime policy once and cache the object reference so policy.js
+    // compiles its matchers a single time across requests in a warm isolate (S4).
+    const policyObj = derivePolicy(payload, config);
+    cache.set(key, { payload, policyObj, refreshedAt: nowMs });
     logPolicyRefresh(payload);
-    return policyFromPayload(payload, config);
+    return { policy: policyObj, source: "kv", version: payload.version };
   } catch (err) {
     console.warn("policy refresh failed", { site_id: config.policySiteId, reason: err.message });
-    if (cached?.payload && nowMs - cached.refreshedAt <= config.policyStaleTtlSeconds * 1000) {
-      return { ...policyFromPayload(cached.payload, config), source: "last-known-good" };
+    if (cached?.policyObj && nowMs - cached.refreshedAt <= config.policyStaleTtlSeconds * 1000) {
+      return { policy: cached.policyObj, source: "last-known-good", version: cached.payload.version };
     }
     if (config.policySource === "required") {
       throw new PolicyUnavailableError(err.message);
@@ -84,12 +87,10 @@ export function policyCacheKey(siteId) {
   return `policy:current:${siteId}`;
 }
 
-function policyFromPayload(payload, config) {
-  return {
-    policy: { rules: payload.rules, default_tier: config.policy.default_tier },
-    source: "kv",
-    version: payload.version,
-  };
+function derivePolicy(payload, config) {
+  // Author-controlled rules, but deny-by-default stays worker-owned: the DA
+  // payload can never flip `default_tier`.
+  return { rules: payload.rules, default_tier: config.policy.default_tier };
 }
 
 function logPolicyRefresh(payload) {

@@ -56,6 +56,9 @@ The worker will understand normalized DA-style path patterns directly:
 - Exact paths outrank glob patterns.
 - Among matching globs, the longest literal prefix before the first wildcard wins.
 - Equal-specificity overlaps are rejected during publish validation.
+- A site-wide `public` rule (`/**`) is rejected during publish validation so a sheet edit
+  cannot silently disable the gate; a top-level `public /*` rule is allowed but produces a
+  non-blocking warning. (`default_tier` stays worker-owned and is never authored in DA.)
 
 ### `tier`
 

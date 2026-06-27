@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { env } from "cloudflare:test";
-import { verifyIdToken } from "../src/jwt.js";
+import { verifyIdToken, getDiscovery } from "../src/jwt.js";
 import { createMockOp } from "./mock-op.js";
 import { signJwt, seedDiscovery, tokenHash, makeRsaKey } from "./helpers.js";
 
@@ -134,6 +134,60 @@ describe("verifyIdToken — I1 exp required and iat cannot be in the future", ()
       op.key.privateKey,
     );
     await expect(verifyIdToken(token, config, "n1")).rejects.toThrow(/iat/);
+  });
+});
+
+describe("getDiscovery — H8 trust boundary", () => {
+  it("rejects a discovery document whose issuer does not match config", async () => {
+    await seedDiscovery(config.issuer, { ...op.discovery, issuer: "https://evil.test" }, op.jwks);
+    await expect(getDiscovery(config)).rejects.toThrow(/issuer/);
+  });
+
+  it("rejects a discovery document with a non-https endpoint", async () => {
+    await seedDiscovery(config.issuer, { ...op.discovery, token_endpoint: "http://op.test/token" }, op.jwks);
+    await expect(getDiscovery(config)).rejects.toThrow(/https/);
+  });
+
+  it("accepts a well-formed discovery document", async () => {
+    await seedDiscovery(config.issuer, op.discovery, op.jwks);
+    await expect(getDiscovery(config)).resolves.toMatchObject({ issuer: config.issuer });
+  });
+});
+
+describe("verifyIdToken — kid-absent + iss guard", () => {
+  it("accepts a token with no kid when the JWKS has exactly one key (oidcc-idtoken-kid-absent-single-jwks)", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = await signJwt(
+      { alg: "RS256", typ: "JWT" }, // header omits kid
+      { iss: config.issuer, aud: "test-client", sub: "user-123", groups: ["site-readers"],
+        iat: now, exp: now + 3600, nonce: "n1" },
+      op.key.privateKey,
+    );
+    const claims = await verifyIdToken(token, config, "n1");
+    expect(claims.sub).toBe("user-123");
+  });
+
+  it("rejects a token with no kid when the JWKS has multiple keys (ambiguous)", async () => {
+    const second = await makeRsaKey("key-2");
+    op.jwks.keys = [op.key.publicJwk, second.publicJwk];
+    await seedDiscovery(config.issuer, op.discovery, op.jwks);
+    const now = Math.floor(Date.now() / 1000);
+    const token = await signJwt(
+      { alg: "RS256", typ: "JWT" }, // header omits kid
+      { iss: config.issuer, aud: "test-client", sub: "x", iat: now, exp: now + 3600, nonce: "n1" },
+      op.key.privateKey,
+    );
+    await expect(verifyIdToken(token, config, "n1")).rejects.toThrow(/no JWKS key/);
+  });
+
+  it("rejects a token whose iss claim is absent (no raw TypeError)", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = await signJwt(
+      { alg: "RS256", kid: op.key.kid, typ: "JWT" },
+      { aud: "test-client", sub: "x", iat: now, exp: now + 3600, nonce: "n1" }, // no iss
+      op.key.privateKey,
+    );
+    await expect(verifyIdToken(token, config, "n1")).rejects.toThrow(/iss/);
   });
 });
 

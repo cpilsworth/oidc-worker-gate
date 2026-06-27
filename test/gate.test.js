@@ -17,7 +17,7 @@ const config = {
 
 async function sessionCookie(groups) {
   const sc = await mintSessionCookie({ sub: "user-123", groups }, config);
-  return sc.match(/__gate_session=([^;]*)/)[1];
+  return sc.match(/__Host-gate_session=([^;]*)/)[1];
 }
 
 beforeEach(async () => {
@@ -45,26 +45,37 @@ describe("gate end-to-end", () => {
     expect(res.headers.get("location")).toBeNull();
   });
   it("P5/P7 secured path with authorized session → forward", async () => {
-    const cookie = `__gate_session=${await sessionCookie(["secure"])}`;
+    const cookie = `__Host-gate_session=${await sessionCookie(["secure"])}`;
     const res = await SELF.fetch("https://www.example.com/api/orders", { headers: { cookie } });
     expect(res.status).toBe(200);
   });
   it("N15 authenticated but wrong audience → 403", async () => {
-    const cookie = `__gate_session=${await sessionCookie(["other-group"])}`;
+    const cookie = `__Host-gate_session=${await sessionCookie(["other-group"])}`;
     const res = await SELF.fetch("https://www.example.com/members/x", { headers: { cookie } });
     expect(res.status).toBe(403);
+  });
+
+  it("H7 error responses are generic and carry hardening headers", async () => {
+    const res = await SELF.fetch("https://www.example.com/api/orders");
+    expect(res.status).toBe(401);
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("www-authenticate")).toContain("Bearer");
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+    const body = await res.json();
+    expect(body.error).toBe("unauthorized");      // generic code, no internal detail
+    expect(typeof body.request_id).toBe("string"); // correlation id for log lookup
   });
 
   it("malformed session cookies fail closed without 500", async () => {
     const protectedRes = await SELF.fetch("https://www.example.com/members/x", {
       redirect: "manual",
-      headers: { cookie: "__gate_session=%" },
+      headers: { cookie: "__Host-gate_session=%" },
     });
     expect(protectedRes.status).toBe(302);
     expect(protectedRes.status).toBeLessThan(500);
 
     const securedRes = await SELF.fetch("https://www.example.com/api/orders", {
-      headers: { cookie: "__gate_session=not-valid!!!" },
+      headers: { cookie: "__Host-gate_session=not-valid!!!" },
     });
     expect(securedRes.status).toBe(401);
     expect(securedRes.status).toBeLessThan(500);

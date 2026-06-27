@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { env } from "cloudflare:test";
 import { OidcClient } from "../src/oidc.js";
-import { readStateCookie, SESSION_COOKIE } from "../src/session.js";
+import { readStateCookie, mintSessionCookie, SESSION_COOKIE } from "../src/session.js";
 import { createMockOp } from "./mock-op.js";
 import { seedDiscovery, reqFor, getSetCookie } from "./helpers.js";
 
@@ -24,8 +24,8 @@ beforeEach(async () => {
 async function startThenCallback({ startPath = "/members/x", tamperState = false, brokenToken,
                                    errorParam, dropCode = false, wrongPkce = false } = {}) {
   const start = await oidc.startLogin(reqFor(startPath), new URL(`https://www.example.com${startPath}`));
-  const loginCookie = getSetCookie(start, "__gate_login");
-  const saved = await readStateCookie(reqFor("/.auth/callback", { cookie: `__gate_login=${loginCookie}` }), config);
+  const loginCookie = getSetCookie(start, "__Host-gate_login");
+  const saved = await readStateCookie(reqFor("/.auth/callback", { cookie: `__Host-gate_login=${loginCookie}` }), config);
   const authUrl = new URL(start.headers.get("location"));
   const code = "code-1";
   // Register the code at the OP. With wrongPkce, register a challenge the real verifier
@@ -39,7 +39,7 @@ async function startThenCallback({ startPath = "/members/x", tamperState = false
   cbUrl.searchParams.set("state", tamperState ? "WRONG" : saved.state);
   if (errorParam) cbUrl.searchParams.set("error", errorParam);
   else if (!dropCode) cbUrl.searchParams.set("code", code);
-  const cbReq = reqFor(cbUrl.pathname + cbUrl.search, { cookie: `__gate_login=${loginCookie}` });
+  const cbReq = reqFor(cbUrl.pathname + cbUrl.search, { cookie: `__Host-gate_login=${loginCookie}` });
   return { start, saved, loginCookie, res: await oidc.handleCallback(cbReq, cbUrl) };
 }
 
@@ -52,7 +52,7 @@ describe("startLogin (P1 building block)", () => {
     expect(loc.searchParams.get("state")).toBeTruthy();
     expect(loc.searchParams.get("nonce")).toBeTruthy();
     expect(loc.searchParams.get("code_challenge_method")).toBe("S256");
-    expect(getSetCookie(res, "__gate_login")).toBeTruthy();
+    expect(getSetCookie(res, "__Host-gate_login")).toBeTruthy();
   });
 });
 
@@ -92,15 +92,15 @@ describe("handleCallback", () => {
   it("N9 replayed callback (consumed state) → 400, no second session", async () => {
     // Build one callback, submit it twice with the same login cookie + state + code.
     const start = await oidc.startLogin(reqFor("/members/x"), new URL("https://www.example.com/members/x"));
-    const loginCookie = getSetCookie(start, "__gate_login");
-    const saved = await readStateCookie(reqFor("/.auth/callback", { cookie: `__gate_login=${loginCookie}` }), config);
+    const loginCookie = getSetCookie(start, "__Host-gate_login");
+    const saved = await readStateCookie(reqFor("/.auth/callback", { cookie: `__Host-gate_login=${loginCookie}` }), config);
     const authUrl = new URL(start.headers.get("location"));
     op.issueCode("code-1", { claims: { nonce: saved.nonce }, accessToken: "atk",
       codeChallenge: authUrl.searchParams.get("code_challenge") });
     const cbUrl = new URL("https://www.example.com/.auth/callback");
     cbUrl.searchParams.set("state", saved.state);
     cbUrl.searchParams.set("code", "code-1");
-    const mk = () => reqFor(cbUrl.pathname + cbUrl.search, { cookie: `__gate_login=${loginCookie}` });
+    const mk = () => reqFor(cbUrl.pathname + cbUrl.search, { cookie: `__Host-gate_login=${loginCookie}` });
     const first = await oidc.handleCallback(mk(), cbUrl);
     expect(first.status).toBe(302);
     expect(getSetCookie(first, SESSION_COOKIE)).toBeTruthy();
@@ -111,15 +111,15 @@ describe("handleCallback", () => {
 
   it("N9 concurrent duplicate callbacks mint at most one session", async () => {
     const start = await oidc.startLogin(reqFor("/members/x"), new URL("https://www.example.com/members/x"));
-    const loginCookie = getSetCookie(start, "__gate_login");
-    const saved = await readStateCookie(reqFor("/.auth/callback", { cookie: `__gate_login=${loginCookie}` }), config);
+    const loginCookie = getSetCookie(start, "__Host-gate_login");
+    const saved = await readStateCookie(reqFor("/.auth/callback", { cookie: `__Host-gate_login=${loginCookie}` }), config);
     const authUrl = new URL(start.headers.get("location"));
     op.issueCode("code-1", { claims: { nonce: saved.nonce }, accessToken: "atk",
       codeChallenge: authUrl.searchParams.get("code_challenge") });
     const cbUrl = new URL("https://www.example.com/.auth/callback");
     cbUrl.searchParams.set("state", saved.state);
     cbUrl.searchParams.set("code", "code-1");
-    const mk = () => reqFor(cbUrl.pathname + cbUrl.search, { cookie: `__gate_login=${loginCookie}` });
+    const mk = () => reqFor(cbUrl.pathname + cbUrl.search, { cookie: `__Host-gate_login=${loginCookie}` });
 
     const results = await Promise.all([
       oidc.handleCallback(mk(), cbUrl),
@@ -129,13 +129,45 @@ describe("handleCallback", () => {
     const sessionCount = results.filter((res) => getSetCookie(res, SESSION_COOKIE)).length;
     expect(sessionCount).toBeLessThanOrEqual(1);
   });
+
+  it("H5 fails closed (503, no session) when the state store is unbound", async () => {
+    const noKvConfig = { ...config, kv: null };
+    const noKvClient = new OidcClient(noKvConfig);
+    const start = await noKvClient.startLogin(reqFor("/members/x"), new URL("https://www.example.com/members/x"));
+    const loginCookie = getSetCookie(start, "__Host-gate_login");
+    const saved = await readStateCookie(
+      reqFor("/.auth/callback", { cookie: `__Host-gate_login=${loginCookie}` }), noKvConfig);
+    const cbUrl = new URL("https://www.example.com/.auth/callback");
+    cbUrl.searchParams.set("state", saved.state);
+    cbUrl.searchParams.set("code", "code-1");
+    const res = await noKvClient.handleCallback(
+      reqFor(cbUrl.pathname + cbUrl.search, { cookie: `__Host-gate_login=${loginCookie}` }), cbUrl);
+    expect(res.status).toBe(503);
+    expect(getSetCookie(res, SESSION_COOKIE)).toBeNull();
+  });
 });
 
 describe("handleLogout (P6)", () => {
+  const logoutUrl = new URL("https://www.example.com/.auth/logout");
+
   it("clears the session and redirects to end_session_endpoint", async () => {
-    const res = await oidc.handleLogout(reqFor("/.auth/logout"), new URL("https://www.example.com/.auth/logout"));
+    const res = await oidc.handleLogout(reqFor("/.auth/logout", { method: "POST" }), logoutUrl);
     expect(res.status).toBe(302);
     expect(getSetCookie(res, SESSION_COOKIE)).toBe("");
     expect(res.headers.get("location")).toContain(op.discovery.end_session_endpoint);
+  });
+
+  it("H9 rejects a cross-site GET logout (CSRF) with 405", async () => {
+    const res = await oidc.handleLogout(reqFor("/.auth/logout"), logoutUrl);
+    expect(res.status).toBe(405);
+    expect(getSetCookie(res, SESSION_COOKIE)).toBeNull();
+  });
+
+  it("H9 includes id_token_hint when the session carries the id_token", async () => {
+    const setCookie = await mintSessionCookie({ sub: "user-123", groups: [] }, config, "the-id-token");
+    const cookie = `${SESSION_COOKIE}=${setCookie.match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))[1]}`;
+    const res = await oidc.handleLogout(reqFor("/.auth/logout", { method: "POST", cookie }), logoutUrl);
+    const loc = new URL(res.headers.get("location"));
+    expect(loc.searchParams.get("id_token_hint")).toBe("the-id-token");
   });
 });

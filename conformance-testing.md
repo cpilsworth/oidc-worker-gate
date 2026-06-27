@@ -40,11 +40,11 @@ and is wired in by pointing `OIDC_ISSUER` at the mock and seeding `OIDC_CACHE` K
 | # | Scenario | Expected |
 | --- | --- | --- |
 | P1 | `protected` path, no session | 302 to `authorization_endpoint`; `state`+`nonce`+PKCE `code_challenge` present; transient signed cookie set |
-| P2 | Valid callback (`code` + matching `state`) | `code`→token exchange w/ PKCE verifier; valid `id_token`; `__gate_session` minted; 302 back to original path |
+| P2 | Valid callback (`code` + matching `state`) | `code`→token exchange w/ PKCE verifier; valid `id_token`; `__Host-gate_session` minted; 302 back to original path |
 | P3 | Request with valid session | Forwarded to EDS origin; `x-auth-*` headers set; inbound `Cookie` stripped |
 | P4 | `public` path, no session | Forwarded to origin, **no** auth attempted |
 | P5 | `secured` path, valid session | Forwarded to origin |
-| P6 | RP-initiated logout `/.auth/logout` | Session cookie cleared; redirect to `end_session_endpoint` / post-logout URL |
+| P6 | RP-initiated logout `/.auth/logout` (**POST**) | Session cookie cleared; redirect to `end_session_endpoint` with `id_token_hint` / post-logout URL |
 | P7 | Required audience/entitlement present | `protected`/`secured` allowed |
 
 ### Negative cases — **the conformance substance**
@@ -52,9 +52,12 @@ and is wired in by pointing `OIDC_ISSUER` at the mock and seeding `OIDC_CACHE` K
 The RP must reject every one of these (no session minted; surfaced as error, not pass-through).
 
 > **Callback failure must be observable.** A failed callback validation returns a concrete
-> error response — **`400 Bad Request` with an error page** — *distinct from* the start-login
-> 302. A worker that silently re-302s into login on a bad token reads to the OIDF suite (and
-> to humans) as a redirect loop, not a rejection, and the negative test cannot pass.
+> error response — **`400 Bad Request` with a generic JSON body** (`{ "error": …,
+> "request_id": … }`) — *distinct from* the start-login 302. The body is deliberately generic:
+> it never reflects the IdP `error` parameter or an exception message back to the caller, but
+> the real reason is logged server-side and correlatable via `request_id`. A worker that
+> silently re-302s into login on a bad token reads to the OIDF suite (and to humans) as a
+> redirect loop, not a rejection, and the negative test cannot pass.
 
 | # | Tampered input | Expected RP behavior |
 | --- | --- | --- |
@@ -65,15 +68,17 @@ The RP must reject every one of these (no session minted; surfaced as error, not
 | N4b | **Multi-valued `aud`** with missing or mismatched **`azp`** | reject — when `aud` has multiple values, `azp` MUST be present and equal `client_id` |
 | N5 | **Expired** `exp` (and `iat`/`nbf` in future) | reject |
 | N6 | Missing or mismatched **`nonce`** vs login | reject — replay protection |
-| N7 | **`kid` mismatch** / key rotation | refetch JWKS **once**; still missing → reject |
+| N7 | **`kid` mismatch** / key rotation / **`kid` absent** | match by `kid`, refetching JWKS **once** on a miss then rejecting; when the header omits `kid`, use the sole JWKS key, else reject (ambiguous) |
 | N8 | Callback with **missing/mismatched `state`** | reject — CSRF |
 | N9 | **Replayed `state`** (already consumed) | reject |
 | N10 | Token exchange with **wrong PKCE `code_verifier`** | OP rejects; RP surfaces error, no session |
 | N11 | **`c_hash` / `at_hash` mismatch** (when `code`/`access_token` present) | reject |
 | N12 | OP returns **`error=` callback** (e.g. `access_denied`) | handled gracefully, no session, no 500 |
 | N13 | `returnTo` set to an **absolute/cross-origin URL** | sanitized to same-origin relative — no open redirect |
-| N14 | **`secured`** path, no/invalid session | **401 JSON**, no redirect |
+| N14 | **`secured`** path, no/invalid session | **401 JSON**, no redirect; carries `WWW-Authenticate` + `X-Content-Type-Options: nosniff` |
 | N15 | Valid session but missing the matched row's required **audience** | **403** |
+| N16 | Logout via cross-site **`GET`** (CSRF) | **405**, session not cleared — only `POST` performs logout |
+| N17 | Path-matcher bypass: encoded traversal under a public prefix (`/blog/%2e%2e/members/secret`) or an encoded separator (`%2F`/`%5C`) | canonicalized before classify → treated as the real (protected) path, or **`400`** for encoded separators/malformed escapes — never served as public |
 
 ### Run
 
@@ -123,3 +128,10 @@ the worker can't be exposed publicly.
   allowlist, cookie stripping, `x-auth-*` injection, request-id propagation, and
   protected/secured `no-store` caching — should be covered by focused unit/integration
   tests alongside the mock-OP suite.
+- Hardening behaviors also covered by focused tests: **request-path canonicalization**
+  (`path.test.js`, `gate-normalization.test.js`, N17), **discovery-document validation**
+  (issuer match + https endpoints, `jwt.test.js` H8), **callback fail-closed when the state
+  store is unbound** (`oidc.test.js` H5), **`__Host-` cookie prefix** (H3), **generic error
+  bodies + `nosniff`/`WWW-Authenticate`/`request_id`** (H7), **config invariants** (≥32-byte
+  HMAC keys, positive-integer TTLs — `config.test.js` H6), and the **DA publish breadth
+  guard** (site-wide `public /**` rejected — `policy-publisher.test.js` H2).

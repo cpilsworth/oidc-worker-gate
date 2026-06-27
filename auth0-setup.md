@@ -30,6 +30,7 @@ Set these in `wrangler.toml` `[vars]`:
 | `CLIENT_ID` | Auth0 application Client ID |
 | `REDIRECT_URI` | `https://<worker-subdomain>.workers.dev/.auth/callback` |
 | `SCOPES` | `openid profile email` |
+| `GROUPS_CLAIM` | `https://oidc.workers.dev/groups` — the single claim the worker reads for membership (see below) |
 
 Set these as secrets via `wrangler secret put`:
 
@@ -65,7 +66,7 @@ exports.onExecutePostLogin = async (event, api) => {
 };
 ```
 
-The namespace prefix (`https://oidc.workers.dev/groups`) is required — Auth0 silently drops non-namespaced custom claims from tokens. The worker reads this namespaced claim and maps it to the session `groups` array.
+The namespace prefix (`https://oidc.workers.dev/groups`) is required — Auth0 silently drops non-namespaced custom claims from tokens. The worker reads **only** the single claim named by `GROUPS_CLAIM` (there is no silent `groups`/`roles` fallback, so an unexpected claim can't grant access), so set `GROUPS_CLAIM = "https://oidc.workers.dev/groups"` to match the claim this Action emits. The worker maps that claim's values to the session `groups` array.
 
 Deploy the action, then wire it into the **Login flow**: **Actions → Flows → Login** → drag the action between Start and Complete → Apply.
 
@@ -83,7 +84,7 @@ requires an Auth0 role named `medical` assigned to the user.
 
 ## Logout
 
-The worker redirects to Auth0's `end_session_endpoint` on `/.auth/logout`, which clears the Auth0 session and returns the user to the worker's root. No additional Auth0 configuration is needed for logout.
+The worker redirects to Auth0's `end_session_endpoint` on a **`POST`** to `/.auth/logout` (a cross-site `GET` is rejected with `405` to prevent logout CSRF), passing `id_token_hint` so Auth0 can identify the session. It clears the gate session and returns the user to the worker's root. No additional Auth0 configuration is needed for logout.
 
 ---
 

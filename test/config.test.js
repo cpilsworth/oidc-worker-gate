@@ -36,6 +36,7 @@ describe("loadConfig", () => {
     expect(c.policySiteId).toBe("cpilsworth/j2retail");
     expect(c.policyHmacKey).toBe("policy-hmac-key-at-least-32-bytes-long!!");
     expect(c.audienceMap).toEqual({ medical: ["auth0:role:medical"] });
+    expect(c.groupsClaim).toBe("groups"); // default single claim
     expect(c.workerManagedPaths).toContain("/media_*");
     expect(c.kv).toBe(env.OIDC_CACHE);
   });
@@ -47,5 +48,36 @@ describe("loadConfig", () => {
   });
   it("rejects invalid policy source values", () => {
     expect(() => loadConfig({ ...env, POLICY_SOURCE: "other" })).toThrow(/POLICY_SOURCE/);
+  });
+
+  it("H4 makes the groups claim configurable", () => {
+    expect(loadConfig({ ...env, GROUPS_CLAIM: "https://oidc.workers.dev/groups" }).groupsClaim)
+      .toBe("https://oidc.workers.dev/groups");
+  });
+
+  it("H6 rejects a SESSION_HMAC_KEY shorter than 32 bytes", () => {
+    expect(() => loadConfig({ ...env, SESSION_HMAC_KEY: "too-short" })).toThrow(/SESSION_HMAC_KEY.*32/);
+  });
+
+  it("H6 rejects a POLICY_HMAC_KEY shorter than 32 bytes when set", () => {
+    expect(() => loadConfig({ ...env, POLICY_HMAC_KEY: "short" })).toThrow(/POLICY_HMAC_KEY.*32/);
+  });
+
+  it("H6 allows an empty POLICY_HMAC_KEY (worker/auto modes without KV policy)", () => {
+    expect(loadConfig({ ...env, POLICY_HMAC_KEY: "" }).policyHmacKey).toBe("");
+  });
+
+  it("H6 rejects a non-numeric SESSION_TTL (no NaN exp → no silent login loop)", () => {
+    expect(() => loadConfig({ ...env, SESSION_TTL: "not-a-number" })).toThrow(/SESSION_TTL/);
+  });
+
+  it("H6 rejects a zero or negative SESSION_TTL", () => {
+    expect(() => loadConfig({ ...env, SESSION_TTL: "0" })).toThrow(/SESSION_TTL/);
+    expect(() => loadConfig({ ...env, SESSION_TTL: "-5" })).toThrow(/SESSION_TTL/);
+  });
+
+  it("H6 rejects non-numeric policy refresh/stale TTLs", () => {
+    expect(() => loadConfig({ ...env, POLICY_REFRESH_TTL_SECONDS: "soon" })).toThrow(/POLICY_REFRESH_TTL_SECONDS/);
+    expect(() => loadConfig({ ...env, POLICY_STALE_TTL_SECONDS: "later" })).toThrow(/POLICY_STALE_TTL_SECONDS/);
   });
 });

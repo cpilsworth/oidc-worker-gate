@@ -1,13 +1,41 @@
 import { base64UrlDecode, decodeJsonSegment, base64UrlEncode, utf8, timingSafeEqual } from "./encoding.js";
+import { kvGetFresh, kvPutWithTtl } from "./kv.js";
 
 const CACHE_TTL_SECONDS = 3600;
 
 export async function getDiscovery(config) {
-  return cachedJson(config.kv, `discovery:${config.issuer}`, async () => {
+  const doc = await cachedJson(config.kv, `discovery:${config.issuer}`, async () => {
     const res = await fetch(`${config.issuer}/.well-known/openid-configuration`);
     if (!res.ok) throw new Error(`discovery fetch failed: ${res.status}`);
     return res.json();
   });
+  // Don't trust the discovery JSON blindly (H8): the issuer must match what we
+  // were configured with, and the endpoints we will redirect/POST to must be
+  // https. Validate on every read so a poisoned cache entry can't slip through.
+  assertValidDiscovery(doc, config.issuer);
+  return doc;
+}
+
+function assertValidDiscovery(doc, issuer) {
+  if (!doc || typeof doc !== "object") throw new Error("discovery document malformed");
+  if (typeof doc.issuer !== "string" || doc.issuer.replace(/\/$/, "") !== issuer) {
+    throw new Error("discovery issuer mismatch");
+  }
+  for (const ep of ["authorization_endpoint", "token_endpoint", "jwks_uri"]) {
+    if (!isHttpsUrl(doc[ep])) throw new Error(`discovery ${ep} must be an https URL`);
+  }
+  if (doc.end_session_endpoint !== undefined && !isHttpsUrl(doc.end_session_endpoint)) {
+    throw new Error("discovery end_session_endpoint must be an https URL");
+  }
+}
+
+function isHttpsUrl(value) {
+  if (typeof value !== "string" || !value) return false;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 async function getJwks(config, jwksUri, { force = false } = {}) {
@@ -45,7 +73,8 @@ export async function verifyIdToken(idToken, config, expectedNonce, hashes = {})
   // --- claims ---
   const now = Math.floor(Date.now() / 1000);
   const skew = 60;
-  if (claims.iss.replace(/\/$/, "") !== config.issuer) throw new Error("iss mismatch"); // N3
+  if (typeof claims.iss !== "string" || claims.iss.replace(/\/$/, "") !== config.issuer)
+    throw new Error("iss mismatch"); // N3
   if (!audienceMatches(claims.aud, config.clientId)) throw new Error("aud mismatch"); // N4
   if (claims.azp !== undefined && claims.azp !== config.clientId) throw new Error("azp mismatch");
   if (Array.isArray(claims.aud) && claims.aud.length > 1 && claims.azp !== config.clientId)
@@ -67,13 +96,11 @@ export async function verifyIdToken(idToken, config, expectedNonce, hashes = {})
 }
 
 async function importSigningKey(config, jwksUri, kid) {
-  let jwks = await getJwks(config, jwksUri);
-  let jwk = jwks.keys.find((k) => k.kid === kid && k.kty === "RSA");
-  if (!jwk) {                                  // kid miss → refetch JWKS exactly once
-    jwks = await getJwks(config, jwksUri, { force: true });
-    jwk = jwks.keys.find((k) => k.kid === kid && k.kty === "RSA");
+  let jwk = selectSigningJwk(await getJwks(config, jwksUri), kid);
+  if (!jwk) {                                  // kid miss / rotation → refetch JWKS exactly once
+    jwk = selectSigningJwk(await getJwks(config, jwksUri, { force: true }), kid);
   }
-  if (!jwk) throw new Error(`no JWKS key for kid ${kid}`);
+  if (!jwk) throw new Error(`no JWKS key for kid ${kid ?? "(absent)"}`);
   return crypto.subtle.importKey(
     "jwk",
     { kty: jwk.kty, n: jwk.n, e: jwk.e, alg: "RS256", ext: true },
@@ -81,6 +108,18 @@ async function importSigningKey(config, jwksUri, kid) {
     false,
     ["verify"],
   );
+}
+
+/**
+ * Pick the RSA verification key. When the token header carries a `kid`, match it
+ * exactly (a mismatch is a rotation → caller refetches once, then rejects). When
+ * the header omits `kid`, the choice is only unambiguous if the JWKS has exactly
+ * one RSA key — OIDC permits omitting `kid` then; multiple keys → reject.
+ */
+function selectSigningJwk(jwks, kid) {
+  const rsa = (jwks.keys || []).filter((k) => k.kty === "RSA");
+  if (kid) return rsa.find((k) => k.kid === kid) || null;
+  return rsa.length === 1 ? rsa[0] : null;
 }
 
 function audienceMatches(aud, clientId) {
@@ -95,14 +134,11 @@ async function leftHalfHash(value) {
 
 /** KV-backed JSON cache. `force` bypasses the read (used for kid-rotation refetch). */
 async function cachedJson(kv, key, fetcher, { force = false } = {}) {
-  if (kv && !force) {
-    const hit = await kv.get(key, "json");
-    if (hit && hit.expires > Date.now()) return hit.value;
+  if (!force) {
+    const hit = await kvGetFresh(kv, key);
+    if (hit !== null) return hit;
   }
   const value = await fetcher();
-  if (kv) {
-    await kv.put(key, JSON.stringify({ value, expires: Date.now() + CACHE_TTL_SECONDS * 1000 }),
-      { expirationTtl: CACHE_TTL_SECONDS });
-  }
+  await kvPutWithTtl(kv, key, value, CACHE_TTL_SECONDS);
   return value;
 }

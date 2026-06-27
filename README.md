@@ -43,7 +43,7 @@ project itself knowing anything about OIDC.
   push-invalidation headers, and a caching carve-out so per-user content can never be
   cross-served from the edge cache.
 - **Conformance-tested.** The OpenID Foundation RP behaviors are encoded as an executable
-  positive/negative matrix (P1–P7, N1–N15) — see [`conformance-testing.md`](./conformance-testing.md).
+  positive/negative matrix (P1–P7, N1–N17) — see [`conformance-testing.md`](./conformance-testing.md).
 
 ## Outcome
 
@@ -84,21 +84,27 @@ management:
 
 1. Every request hits the worker first (CF route `www.example.com/*`).
 2. Gate-owned routes `/.auth/callback` and `/.auth/logout` are handled by the worker.
-3. Worker-managed infrastructure paths are classified from static worker config.
-4. Content paths load the latest signed DA policy snapshot from KV. The snapshot is signed
+3. The request path is **canonicalized** before any classification: percent-decoded,
+   duplicate slashes collapsed, and `.`/`..` segments resolved. Paths carrying encoded
+   separators (`%2F`/`%5C`), backslashes, or malformed escapes are rejected with a generic
+   `400` — a glob like `/blog/**` can't be bypassed by `/blog/%2e%2e/members/secret`.
+4. Worker-managed infrastructure paths are classified from static worker config.
+5. Content paths load the latest signed DA policy snapshot from KV. The snapshot is signed
    with `POLICY_HMAC_KEY`; invalid or wrong-site snapshots are rejected.
-5. `classify(path)` resolves the tier (`public` / `protected` / `secured`) by most-specific
+6. `classify(path)` resolves the tier (`public` / `protected` / `secured`) by most-specific
    DA-style rule match; unmatched → worker-owned `default_tier`.
-6. **public** → forward to the EDS origin immediately (no cookie read).
-7. **protected / secured** → read and HMAC-verify the `__gate_session` cookie **locally**.
+7. **public** → forward to the EDS origin immediately (no cookie read).
+8. **protected / secured** → read and HMAC-verify the `__Host-gate_session` cookie **locally**.
    Valid + in-policy → forward to origin with `x-auth-*` identity headers.
-8. No/expired session → **protected** starts login (mints `state`/`nonce`/PKCE in a
+9. No/expired session → **protected** starts login (mints `state`/`nonce`/PKCE in a
    short-lived signed cookie, 302s to the IdP); **secured** returns `401` JSON.
-9. The IdP redirects to `/.auth/callback`: the gate verifies `state`, exchanges `code`
-   (with the PKCE verifier) for tokens, validates the `id_token` (RS256 vs JWKS, plus
-   `iss`/`aud`/`azp`/`exp`/`iat`/`nonce` and `c_hash`/`at_hash` when present), mints the
-   session, and bounces the user back to where they started. **Any validation failure
-   returns `400`** (not a re-redirect into login), so a rejection is observable.
+10. The IdP redirects to `/.auth/callback`: the gate verifies `state`, exchanges `code`
+    (with the PKCE verifier) for tokens, validates the `id_token` (RS256 vs JWKS, plus
+    `iss`/`aud`/`azp`/`exp`/`iat`/`nonce` and `c_hash`/`at_hash` when present), mints the
+    session, and bounces the user back to where they started. **Any validation failure
+    returns a generic `400`** (not a re-redirect into login), so a rejection is observable.
+    The error body is a generic JSON code plus a `request_id` — it never echoes the IdP
+    `error` parameter or an exception message.
 
 **Tier behaviors.** `protected` is "trigger authentication" — for navigational HTML, a
 missing session yields an interactive **302** into the IdP. `secured` is "validate
@@ -243,6 +249,9 @@ DA-style path syntax:
 - A terminal `/**` also matches the folder itself.
 - Equal-specificity overlapping rules are rejected at publish time.
 - Rules that overlap worker-managed paths are ignored and logged.
+- A site-wide `public` rule (`/**`) is rejected at publish time so a sheet edit can't
+  silently disable the gate; a top-level `public /*` rule is allowed but emits a warning.
+  (`default_tier` is worker-owned and cannot be changed from DA.)
 
 Example sheet rows:
 
@@ -320,15 +329,16 @@ Secrets are set with `wrangler secret put`.
 | `CLIENT_ID` | `0oaEXAMPLEclientid` | Registered confidential-client id. |
 | `REDIRECT_URI` | `https://www.example.com/.auth/callback` | Must match the gate's callback route and be allowlisted at the IdP. |
 | `SCOPES` | `openid profile email groups` | Space-delimited scopes requested at authorize. |
-| `SESSION_TTL` | `3600` | Session cookie lifetime in seconds (primary revocation lever). |
+| `GROUPS_CLAIM` | `groups` | The single id_token claim the worker reads for membership (default `groups`). Set to `https://oidc.workers.dev/groups` for Auth0. No silent fallback to other claims. |
+| `SESSION_TTL` | `3600` | Session cookie lifetime in seconds (primary revocation lever). Must be a positive integer — validated at startup, so a typo can't silently produce `exp: NaN` and a login loop. |
 | `ORIGIN_HOSTNAME` | `main--mysite--myorg.aem.live` | EDS origin; sent as the outbound `Host`. |
 | `FORWARDED_HOST` | `www.example.com` | Public domain; sent as `X-Forwarded-Host` so EDS emits correct absolute URLs. |
 | `PUSH_INVALIDATION` | `enabled` | Set on production only → sends `X-Push-Invalidation: enabled`. |
 | `ROUTES` | `{"callback":"/.auth/callback","logout":"/.auth/logout"}` | Gate-owned paths the worker handles itself. |
 | `POLICY_SOURCE` | `auto` | `auto`, `worker`, or `required`; controls DA/KV policy availability behavior. |
 | `POLICY_SITE_ID` | `cpilsworth/authz` | DA site id in `org/site` format. |
-| `POLICY_REFRESH_TTL_SECONDS` | `60` | In-isolate policy cache freshness window. |
-| `POLICY_STALE_TTL_SECONDS` | `900` | Last-known-good policy window after refresh failure. |
+| `POLICY_REFRESH_TTL_SECONDS` | `60` | In-isolate policy cache freshness window. Positive integer, validated at startup. |
+| `POLICY_STALE_TTL_SECONDS` | `900` | Last-known-good policy window after refresh failure. Positive integer, validated at startup. |
 | `AUDIENCE_MAP` | `{"medical":["medical"],"market-access":["market-access"]}` | Maps raw IdP groups/roles to normalized policy audiences. Unmapped values are dropped. |
 | `WORKER_MANAGED_PATHS` | _(JSON array)_ | Optional override for paths owned by the worker/static policy. |
 | `ACCESS_POLICY` | _(JSON, below)_ | Static worker-managed rules plus emergency fallback policy. |
@@ -345,8 +355,8 @@ Publisher worker variables in `wrangler.publisher.toml`:
 | Secret | Purpose |
 | --- | --- |
 | `OIDC_CLIENT_SECRET` | Confidential-client token-endpoint authentication. |
-| `SESSION_HMAC_KEY` | HMAC-SHA256 signing key for the session/state cookies (≥ 32 bytes). |
-| `POLICY_HMAC_KEY` | HMAC-SHA256 signing key for policy snapshots. Set the same value on delivery and publisher workers. |
+| `SESSION_HMAC_KEY` | HMAC-SHA256 signing key for the session/state cookies. Must be ≥ 32 bytes — enforced at startup. |
+| `POLICY_HMAC_KEY` | HMAC-SHA256 signing key for policy snapshots (≥ 32 bytes when set, enforced at startup). Set the same value on delivery and publisher workers. |
 
 Generate and set the policy signing key:
 
@@ -413,15 +423,16 @@ minted.
 AUDIENCE_MAP = '{"medical":["medical"],"secure":["secure"],"market-access":["market-access"]}'
 ```
 
-For Auth0, the worker reads the namespaced custom claim
-`https://oidc.workers.dev/groups` first, then falls back to `groups` and `roles`.
-Existing sessions keep their mapped audiences until their normal session TTL expires.
+The worker reads membership from exactly one claim, named by `GROUPS_CLAIM` (default
+`groups`). There is no silent fallback to other claims, so an unexpected `groups`/`roles`
+value can't grant access. Existing sessions keep their mapped audiences until their normal
+session TTL expires.
 
 > **Auth0** works as the OP via the generic flow. Auth0 silently drops non-namespaced custom
 > claims from tokens, so roles must be injected under a namespaced key
-> (`https://oidc.workers.dev/groups`) via a Post Login Action. The worker reads this
-> namespaced claim first, then falls back to `groups` / `roles` for other providers. See
-> [`auth0-setup.md`](./auth0-setup.md) for the full setup including the required Action code.
+> (`https://oidc.workers.dev/groups`) via a Post Login Action — then set
+> `GROUPS_CLAIM = "https://oidc.workers.dev/groups"` so the worker reads exactly that claim.
+> See [`auth0-setup.md`](./auth0-setup.md) for the full setup including the required Action code.
 
 > **Adobe IMS** works as the OP via the generic flow, but IMS does **not** emit a `groups`
 > claim in the `id_token` — entitlements require a post-login profile lookup and a
@@ -472,17 +483,31 @@ caches origin responses by URL — so per-user content must not be edge-cached:
 
 ## Security model
 
-- **Session cookie `__gate_session`:** `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`,
-  HMAC-SHA256 signed; carries `sub`, minimal groups/entitlements, `iat`, `exp`. Signing
-  prevents tampering but does **not** hide the payload from the browser — if group names are
-  sensitive, keep them out of the cookie or encrypt the payload.
+- **Session cookie `__Host-gate_session`** (transient login state in `__Host-gate_login`):
+  `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, HMAC-SHA256 signed; carries `sub`, minimal
+  groups/entitlements, `iat`, `exp` (plus the `id_token` for `id_token_hint` on logout, never
+  forwarded to origin). The `__Host-` prefix means a browser only accepts the cookie when
+  `Secure`, `Path=/`, and Domain-less, so a sibling/non-secure subdomain can't overwrite it.
+  Signing prevents tampering but does **not** hide the payload from the browser — if group
+  names are sensitive, keep them out of the cookie or encrypt the payload.
+- **Path canonicalization:** request paths are normalized (percent-decode, collapse `//`,
+  resolve `.`/`..`) before policy matching, and encoded separators (`%2F`/`%5C`), backslashes,
+  and malformed escapes are rejected with `400`, so the matcher and origin can never disagree
+  about which resource was requested (e.g. `/blog/%2e%2e/members` can't be served as public).
 - **Token validation:** RS256 only (no `alg:none`/HS256 confusion); `iss`/`aud`/`exp`(required)/
   `iat`/`nbf`/`nonce` enforced; `azp` checked when present and required for multi-valued
   `aud`; `c_hash`/`at_hash` verified (constant-time) when present; JWKS refetched **once** on
-  a `kid` miss for key rotation, then reject.
+  a `kid` miss for key rotation, then reject. The discovery document is validated before use
+  (its `issuer` must match `OIDC_ISSUER`; `authorization`/`token`/`jwks` endpoints must be
+  `https`).
 - **CSRF / replay:** `state` compared constant-time; `nonce` bound into the id_token;
-  single-use state marker (KV, best-effort) rejects a replayed callback; PKCE S256 protects
-  the code exchange.
+  single-use state marker (KV, best-effort) rejects a replayed callback, and the callback
+  **fails closed (`503`) if the KV store is unbound** rather than skipping the check; PKCE
+  S256 protects the code exchange.
+- **Logout:** RP-initiated logout is **POST-only** (a cross-site `GET` can't force a logout)
+  and sends `id_token_hint` to the OP's `end_session_endpoint`.
+- **Error responses:** generic JSON bodies (`{ error, request_id }`) with `nosniff` and, on
+  `401`, a `WWW-Authenticate` challenge — no IdP/exception text is reflected to the caller.
 - **Open redirect:** post-login `returnTo` validated to same-origin (origin-equality check).
 - **Authorization:** policy-row `audience` intersected with session groups → `403` if empty.
   Per-folder, DA-administered authorization is in [`folder-authorization.md`](./folder-authorization.md).
@@ -499,7 +524,8 @@ The gate owns its telemetry:
 - **Outcome codes as metrics:** count login starts, callback success/fail **by reason**,
   JWKS refetch, KV read errors. The `400`-on-bad-callback is both a response and a counter.
 - **Sink:** **Workers Analytics Engine** and/or **Logpush**.
-- **Correlation:** `x-auth-request-id: <cf-ray>` is propagated to origin.
+- **Correlation:** `x-auth-request-id: <cf-ray>` is propagated to origin, and gate-generated
+  error responses carry a matching `request_id` in their JSON body for log lookup.
 
 ## Performance
 
@@ -510,7 +536,7 @@ last-known-good keys within a staleness window rather than failing all logins.
 
 ## Testing & conformance
 
-`npm test` runs the full positive/negative matrix (P1–P7, N1–N15 + N4b) against an
+`npm test` runs the full positive/negative matrix (P1–P7, N1–N17 + N4b) against an
 in-process mock OpenID Provider. The negative cases fail closed — a token that fails any
 check never yields a session. CI (`.github/workflows/oidc-worker-gate-ci.yml`) gates every
 change to `oidc-worker-gate/**`. The hosted OpenID Foundation RP suite is a

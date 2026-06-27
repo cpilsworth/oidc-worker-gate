@@ -1,7 +1,14 @@
 import { getDiscovery, verifyIdToken } from "./jwt.js";
 import { createPkcePair, randomNonce, randomState } from "./pkce.js";
-import { clearSessionCookie, clearStateCookie, mintSessionCookie, mintStateCookie, readStateCookie } from "./session.js";
+import {
+  clearSessionCookie, clearStateCookie, mintSessionCookie, mintStateCookie,
+  readSession, readStateCookie,
+} from "./session.js";
 import { timingSafeEqual } from "./encoding.js";
+import { errorResponse, requestId } from "./http.js";
+import { kvGetFresh, kvPutWithTtl } from "./kv.js";
+
+const STATE_TTL_SECONDS = 600;
 
 export class OidcClient {
   constructor(config) { this.config = config; }
@@ -27,26 +34,28 @@ export class OidcClient {
 
   async handleCallback(req, url) {
     const saved = await readStateCookie(req, this.config);
-    if (!saved) return errorResponse(400, "Login session expired — please retry.");
+    if (!saved) return fail(req, 400, "invalid_login", "missing_or_expired_state");
 
     const returnedState = url.searchParams.get("state") || "";
-    if (!timingSafeEqual(returnedState, saved.state)) return errorResponse(400, "State mismatch — possible CSRF.");
+    if (!timingSafeEqual(returnedState, saved.state)) return fail(req, 400, "invalid_login", "state_mismatch");
 
-    // Single-use state: reject a replayed callback (N9). Best-effort via KV — CF KV is
-    // eventually consistent, so this stops practical replays, not a perfectly-timed race.
-    // Marked consumed once the state is validated; a later token-exchange failure still
-    // burns the state (user re-initiates login), which is the safe direction.
-    if (this.config.kv) {
-      const usedKey = `state-used:${saved.state}`;
-      if (await this.config.kv.get(usedKey)) return errorResponse(400, "State already used — possible replay.");
-      await this.config.kv.put(usedKey, "1", { expirationTtl: 600 });
-    }
+    // Single-use state requires a store to record consumption. Without KV we
+    // cannot prevent replay, so we fail closed rather than silently skip (H5).
+    if (!this.config.kv) return fail(req, 503, "login_unavailable", "state_store_unbound");
+
+    // Best-effort single-use check (N9). CF KV is eventually consistent, so this
+    // stops practical replays, not a perfectly-timed race. Marked consumed once
+    // the state validates; a later failure still burns the state (user retries),
+    // which is the safe direction.
+    const usedKey = `state-used:${saved.state}`;
+    if (await kvGetFresh(this.config.kv, usedKey)) return fail(req, 400, "invalid_login", "state_replayed");
+    await kvPutWithTtl(this.config.kv, usedKey, true, STATE_TTL_SECONDS);
 
     const idpError = url.searchParams.get("error");
-    if (idpError) return errorResponse(401, `Authorization failed: ${idpError}`);
+    if (idpError) return fail(req, 401, "login_failed", `idp_error:${idpError}`);
 
     const code = url.searchParams.get("code");
-    if (!code) return errorResponse(400, "Missing authorization code.");
+    if (!code) return fail(req, 400, "invalid_login", "missing_code");
 
     const discovery = await getDiscovery(this.config);
     const body = new URLSearchParams({
@@ -56,21 +65,20 @@ export class OidcClient {
     const tokenRes = await fetch(discovery.token_endpoint, {
       method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: body.toString(),
     });
-    if (!tokenRes.ok) return errorResponse(401, `Token exchange failed: ${tokenRes.status}`);
+    if (!tokenRes.ok) return fail(req, 401, "login_failed", `token_exchange_${tokenRes.status}`);
 
     const tokens = await tokenRes.json();
-    if (!tokens.id_token) return errorResponse(401, "No id_token in token response.");
+    if (!tokens.id_token) return fail(req, 401, "login_failed", "no_id_token");
 
     let claims;
     try {
       claims = await verifyIdToken(tokens.id_token, this.config, saved.nonce,
         { code, accessToken: tokens.access_token });
-
     } catch (e) {
-      return errorResponse(400, `ID token validation failed: ${e.message}`);
+      return fail(req, 400, "invalid_token", e.message);
     }
 
-    const sessionCookie = await mintSessionCookie(claims, this.config);
+    const sessionCookie = await mintSessionCookie(claims, this.config, tokens.id_token);
     const headers = new Headers({ location: safeReturnTo(saved.returnTo, url.origin) });
     headers.append("set-cookie", sessionCookie);
     headers.append("set-cookie", clearStateCookie());
@@ -78,13 +86,22 @@ export class OidcClient {
   }
 
   async handleLogout(req, url) {
+    // RP-initiated logout is state-changing; require POST so a cross-site GET
+    // cannot force a logout (CSRF — H9).
+    if (req.method !== "POST") {
+      return errorResponse(405, "method_not_allowed", { requestId: requestId(req) });
+    }
+
+    const session = await readSession(req, this.config);
     const discovery = await getDiscovery(this.config).catch(() => ({}));
     const headers = new Headers();
     headers.append("set-cookie", clearSessionCookie());
+    headers.append("set-cookie", clearStateCookie());
     if (discovery.end_session_endpoint) {
       const logout = new URL(discovery.end_session_endpoint);
       logout.searchParams.set("client_id", this.config.clientId);
       logout.searchParams.set("post_logout_redirect_uri", `${url.origin}/`);
+      if (session?.id_token) logout.searchParams.set("id_token_hint", session.id_token);
       headers.set("location", logout.toString());
       return new Response(null, { status: 302, headers });
     }
@@ -104,6 +121,11 @@ function safeReturnTo(returnTo, origin) {
   }
 }
 
-function errorResponse(status, message) {
-  return new Response(`${status} — ${message}\n`, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
+/** Log the real reason server-side, return a generic body to the caller (H7). */
+function fail(req, status, code, detail) {
+  console.warn("callback rejected", { status, code, detail });
+  return errorResponse(status, code, {
+    requestId: requestId(req),
+    wwwAuthenticate: status === 401 ? 'Bearer error="invalid_token"' : undefined,
+  });
 }

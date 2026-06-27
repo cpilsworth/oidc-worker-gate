@@ -1,3 +1,6 @@
+import { GATE_COOKIE_NAMES } from "./session.js";
+import { NO_STORE } from "./http.js";
+
 /**
  * Forward a request to the EDS origin per AEM BYO-CDN rules. For protected/secured
  * tiers, disable edge caching and rewrite the response so per-user content can never
@@ -6,12 +9,12 @@
  * @param {object|null} session  null for the public tier
  * @param {string} tier          "public" | "protected" | "secured"
  * @param {import("./policy.js").Config} config
+ * @param {string} [pathname]    canonicalized path (H1); falls back to the raw path
  */
-const GATE_COOKIE_NAMES = new Set(["__gate_session", "__gate_login"]);
-
-export async function forwardToOrigin(request, session, tier, config) {
+export async function forwardToOrigin(request, session, tier, config, pathname) {
   const inUrl = new URL(request.url);
-  const originUrl = `https://${config.originHostname}${inUrl.pathname}${inUrl.search}`;
+  const path = pathname || inUrl.pathname;
+  const originUrl = `https://${config.originHostname}${path}${inUrl.search}`;
 
   const headers = new Headers(request.headers);
   headers.delete("cookie"); // never leak the gate session to origin
@@ -44,7 +47,7 @@ export async function forwardToOrigin(request, session, tier, config) {
   stripGateSetCookies(out.headers);
   if (!cacheOff) return out;
 
-  out.headers.set("cache-control", "private, no-store");
+  out.headers.set("cache-control", NO_STORE);
   out.headers.delete("age");
   return out;
 }
