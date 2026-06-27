@@ -258,14 +258,13 @@ DA-style path syntax:
 
 Example sheet rows:
 
-```tsv
-path	tier	audience	description
-/	public		Site root.
-/blog/**	public		Public blog content.
-/members/**	protected	medical	Members section requires medical audience.
-/market/**	protected	market-access	Market content requires market access.
-/api/*	secured	secure	API endpoints return 401 instead of redirecting.
-```
+| `path` | `tier` | `audience` | `description` |
+| --- | --- | --- | --- |
+| `/` | `public` | | Site root. |
+| `/blog/**` | `public` | | Public blog content. |
+| `/members/**` | `protected` | `medical` | Members section requires medical audience. |
+| `/market/**` | `protected` | `market-access` | Market content requires market access. |
+| `/api/*` | `secured` | `secure` | API endpoints return 401 instead of redirecting. |
 
 `protected` and `secured` both require authentication. The only difference is the
 unauthenticated response: `protected` redirects to login, while `secured` returns `401`
