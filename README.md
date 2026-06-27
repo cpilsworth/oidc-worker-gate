@@ -45,39 +45,56 @@ project itself knowing anything about OIDC.
 - **Conformance-tested.** The OpenID Foundation RP behaviors are encoded as an executable
   positive/negative matrix (P1–P7, N1–N15) — see [`conformance-testing.md`](./conformance-testing.md).
 
+## Outcome
+
+The implemented plan separates delivery-time authorization from author-time policy
+management:
+
+- DA owns the full content policy in the site configuration sheet named `access-control`.
+- A separate publisher worker reads that sheet from `admin.da.live`, validates it, signs
+  the normalized policy, and stores it in Cloudflare KV.
+- The delivery worker verifies the signed KV snapshot before enforcing content paths.
+- Static worker policy remains responsible for worker-owned and public EDS infrastructure
+  paths, plus fallback behavior when `POLICY_SOURCE=auto`.
+- `POLICY_SOURCE=required` is available when operators want content paths to fail closed
+  with `503` if no valid DA/KV policy is available.
+- Automatic DA publish/change event integration is intentionally deferred; manual refresh
+  is the current operational path.
+
 ## How it works
 
 ```
-                          ┌──────────────────────────────────────────────┐
-   Browser ──▶ Cloudflare  │            oidc-worker-gate (Worker)           │
-              edge (CF)    │                                                │
-                           │  /.auth/callback , /.auth/logout  ── gate routes
-                           │                                                │
-                           │  classify(path) ─▶ tier                        │
-                           │     public   ───────────────────────▶ forward ─┼──▶ EDS origin
-                           │     protected─ session? yes ─▶ forward ────────┼──▶ main--site--org
-                           │                 │      no  ─▶ 302 login         │      .aem.live
-                           │     secured  ─ session? yes ─▶ forward ────────┼──▶
-                           │                 │      no  ─▶ 401 JSON          │
-                           └───────────────┬────────────────────────────────┘
-                                           │ (login + callback only)
-                                           ▼
-                                OpenID Provider (Okta / Entra / Ping / Auth0 / IMS)
-                           authorize · token · jwks · end_session
+   DA config sheet                    Publisher Worker
+   access-control ──manual refresh──▶ read admin.da.live/config/{org}/{site}/
+                                      validate + normalize + sign
+                                      write policy:current:{org/site} to KV
+
+   Browser ──▶ Delivery Worker ──verify signed KV policy──▶ classify(path)
+                  │                                            │
+                  │ public                                     ├─▶ forward to EDS origin
+                  │ protected + no session                     ├─▶ 302 to IdP
+                  │ secured + no session                       ├─▶ 401 JSON
+                  │ authenticated but wrong audience           └─▶ 403 JSON
+                  ▼
+          OpenID Provider
+          authorize · token · jwks · end_session
 ```
 
 **Request lifecycle**
 
 1. Every request hits the worker first (CF route `www.example.com/*`).
 2. Gate-owned routes `/.auth/callback` and `/.auth/logout` are handled by the worker.
-3. `classify(path)` resolves the tier (`public` / `protected` / `secured`) by most-specific
-   rule match; unmatched → `default_tier`.
-4. **public** → forward to the EDS origin immediately (no cookie read).
-5. **protected / secured** → read and HMAC-verify the `__gate_session` cookie **locally**.
+3. Worker-managed infrastructure paths are classified from static worker config.
+4. Content paths load the latest signed DA policy snapshot from KV. The snapshot is signed
+   with `POLICY_HMAC_KEY`; invalid or wrong-site snapshots are rejected.
+5. `classify(path)` resolves the tier (`public` / `protected` / `secured`) by most-specific
+   DA-style rule match; unmatched → worker-owned `default_tier`.
+6. **public** → forward to the EDS origin immediately (no cookie read).
+7. **protected / secured** → read and HMAC-verify the `__gate_session` cookie **locally**.
    Valid + in-policy → forward to origin with `x-auth-*` identity headers.
-6. No/expired session → **protected** starts login (mints `state`/`nonce`/PKCE in a
+8. No/expired session → **protected** starts login (mints `state`/`nonce`/PKCE in a
    short-lived signed cookie, 302s to the IdP); **secured** returns `401` JSON.
-7. The IdP redirects to `/.auth/callback`: the gate verifies `state`, exchanges `code`
+9. The IdP redirects to `/.auth/callback`: the gate verifies `state`, exchanges `code`
    (with the PKCE verifier) for tokens, validates the `id_token` (RS256 vs JWKS, plus
    `iss`/`aud`/`azp`/`exp`/`iat`/`nonce` and `c_hash`/`at_hash` when present), mints the
    session, and bounces the user back to where they started. **Any validation failure
@@ -101,16 +118,15 @@ but unauthorized → **`403`**.
 ```
 oidc-worker-gate/
 ├── src/
-│   ├── index.js     # Worker entry: classify tier → dispatch (public/protected/secured + gate routes)
-│   ├── policy.js    # ACCESS_POLICY matcher: classify(path)→{tier,audience} + isAuthorized()
-│   ├── origin.js    # EDS origin forwarding (Host / X-Forwarded-Host / push-inval, cache carve-out)
-│   ├── oidc.js      # RP flow: auth-code+PKCE start, callback, RP-initiated logout
-│   ├── jwt.js       # RS256 id_token validation vs JWKS (+ KV-cached discovery/JWKS, kid-refetch)
-│   ├── session.js   # Mint/verify HMAC session + transient login-state cookie
-│   ├── pkce.js      # PKCE S256 verifier/challenge + random state/nonce
-│   ├── cookies.js   # Cookie parse/serialize + HMAC sign/unsign (Web Crypto)
-│   ├── config.js    # Load env bindings (vars + secrets + KV) into a Config
-│   └── encoding.js  # base64url, UTF-8, constant-time compare
+│   ├── index.js             # Delivery worker entrypoint.
+│   ├── publisher-worker.js  # Separate policy publisher worker.
+│   ├── policy.js            # DA-style matcher + authorization helpers.
+│   ├── policy-publisher.js  # Sheet extraction, validation, signing, KV publishing.
+│   ├── policy-snapshot.js   # Signed snapshot verification + runtime loading.
+│   ├── session.js           # HMAC session cookies + audience mapping.
+│   ├── oidc.js / jwt.js     # OIDC RP flow and id_token validation.
+│   ├── origin.js            # EDS origin forwarding and cache carve-out.
+│   └── config.js            # Cloudflare binding config loader.
 ├── test/            # vitest + in-process mock-OP harness (see conformance-testing.md)
 ├── scripts/         # policy publish, refresh, and status inspection commands
 ├── wrangler.toml    # delivery worker config: route, vars, KV binding
@@ -147,7 +163,8 @@ npx wrangler kv namespace create OIDC_CACHE
 ```
 
 **2. Set non-secret config** in `wrangler.toml` `[vars]` — at minimum `OIDC_ISSUER`,
-`CLIENT_ID`, `REDIRECT_URI`, `ORIGIN_HOSTNAME`, `FORWARDED_HOST`, and `ACCESS_POLICY` (see
+`CLIENT_ID`, `REDIRECT_URI`, `ORIGIN_HOSTNAME`, `FORWARDED_HOST`, `POLICY_SITE_ID`,
+`POLICY_SOURCE`, `AUDIENCE_MAP`, and the static fallback/operator `ACCESS_POLICY` (see
 [Configuration](#configuration)).
 
 **3. Set secrets** (never put these in `wrangler.toml`):
@@ -175,6 +192,9 @@ routes = [{ pattern = "www.example.com/*", zone_name = "example.com" }]
 ```bash
 npx wrangler deploy
 npm run deploy:publisher
+cp .env.example .env
+# fill DA_TOKEN and POLICY_PUBLISHER_URL
+npm run refresh-policy -- --pretty
 ```
 
 - A **public** path (e.g. `/`) returns the EDS page.
@@ -192,9 +212,105 @@ npm run deploy:publisher
 > protected content, also restrict the EDS origin (shared-secret header, network controls,
 > or an origin-side check that only trusts worker-injected headers).
 
+## DA Policy Authoring
+
+Author content authorization in the DA site configuration sheet named `access-control`.
+The publisher reads it from:
+
+```text
+https://admin.da.live/config/{org}/{site}/
+```
+
+For this test site, `POLICY_SITE_ID=cpilsworth/authz`, so the source is:
+
+```text
+https://admin.da.live/config/cpilsworth/authz/
+```
+
+Use one table with these columns:
+
+| Column | Required | Meaning |
+| --- | --- | --- |
+| `path` | Yes | Case-sensitive pathname pattern. Query strings and fragments are not allowed. |
+| `tier` | Yes | One of `public`, `protected`, `secured`. |
+| `audience` | No | Comma-separated normalized audience names. Blank means any authenticated user for `protected`/`secured`. |
+| `description` | No | Author-facing note, ignored by enforcement. |
+
+DA-style path syntax:
+
+- `*` matches within one path segment, for example `/api/*`.
+- `**` matches across path segments, for example `/members/**`.
+- A terminal `/**` also matches the folder itself.
+- Equal-specificity overlapping rules are rejected at publish time.
+- Rules that overlap worker-managed paths are ignored and logged.
+
+Example sheet rows:
+
+```tsv
+path	tier	audience	description
+/	public		Site root.
+/blog/**	public		Public blog content.
+/members/**	protected	medical	Members section requires medical audience.
+/market/**	protected	market-access	Market content requires market access.
+/api/*	secured	secure	API endpoints return 401 instead of redirecting.
+```
+
+`protected` and `secured` both require authentication. The only difference is the
+unauthenticated response: `protected` redirects to login, while `secured` returns `401`
+JSON.
+
+## Policy Publishing
+
+The publisher is a separate Cloudflare Worker. It receives a refresh request with a DA
+Bearer token, reads the DA config document itself, validates the `access-control` sheet,
+signs the normalized policy, and writes it to KV.
+
+KV keys:
+
+| Key | Purpose |
+| --- | --- |
+| `policy:current:<site-id>` | Active signed policy envelope used by the delivery worker. |
+| `policy:version:<site-id>:<version>` | Versioned copy for audit/debugging. |
+| `policy:status:<site-id>` | Last publish success/failure, warnings, and errors. |
+
+Manual refresh is the current production path:
+
+```bash
+cp .env.example .env
+# fill DA_TOKEN, POLICY_SITE_ID, and POLICY_PUBLISHER_URL
+npm run refresh-policy -- --pretty
+```
+
+Successful output looks like:
+
+```json
+{
+  "level": "info",
+  "status": 200,
+  "site_id": "cpilsworth/authz",
+  "response": {
+    "status": "published",
+    "rules": 5,
+    "ignored_rules": 0,
+    "warnings": []
+  }
+}
+```
+
+Inspect the current publish status and active policy summary:
+
+```bash
+npm run policy-status -- --pretty
+npm run policy-status -- --current --pretty
+```
+
+Automatic DA publish/change event wiring is intentionally deferred. When that integration
+is added, it should call the same publisher endpoint after DA publishes the sheet.
+
 ## Configuration
 
-All non-secret config is `wrangler.toml` `[vars]`; two values are secrets.
+All non-secret config is in `[vars]` in `wrangler.toml` or `wrangler.publisher.toml`.
+Secrets are set with `wrangler secret put`.
 
 ### Variables (`[vars]`)
 
@@ -209,7 +325,20 @@ All non-secret config is `wrangler.toml` `[vars]`; two values are secrets.
 | `FORWARDED_HOST` | `www.example.com` | Public domain; sent as `X-Forwarded-Host` so EDS emits correct absolute URLs. |
 | `PUSH_INVALIDATION` | `enabled` | Set on production only → sends `X-Push-Invalidation: enabled`. |
 | `ROUTES` | `{"callback":"/.auth/callback","logout":"/.auth/logout"}` | Gate-owned paths the worker handles itself. |
-| `ACCESS_POLICY` | _(JSON, below)_ | The path→tier+audience rules. |
+| `POLICY_SOURCE` | `auto` | `auto`, `worker`, or `required`; controls DA/KV policy availability behavior. |
+| `POLICY_SITE_ID` | `cpilsworth/authz` | DA site id in `org/site` format. |
+| `POLICY_REFRESH_TTL_SECONDS` | `60` | In-isolate policy cache freshness window. |
+| `POLICY_STALE_TTL_SECONDS` | `900` | Last-known-good policy window after refresh failure. |
+| `AUDIENCE_MAP` | `{"medical":["medical"],"market-access":["market-access"]}` | Maps raw IdP groups/roles to normalized policy audiences. Unmapped values are dropped. |
+| `WORKER_MANAGED_PATHS` | _(JSON array)_ | Optional override for paths owned by the worker/static policy. |
+| `ACCESS_POLICY` | _(JSON, below)_ | Static worker-managed rules plus emergency fallback policy. |
+
+Publisher worker variables in `wrangler.publisher.toml`:
+
+| Variable | Example | Purpose |
+| --- | --- | --- |
+| `DA_BASE_URL` | `https://admin.da.live/config` | Base URL used to read DA site config. |
+| `PUBLISHER_SITES` | `{"cpilsworth/authz":{"audience_map":{"medical":["medical"]}}}` | Allow-listed sites and their audience maps. |
 
 ### Secrets (`wrangler secret put`)
 
@@ -217,44 +346,76 @@ All non-secret config is `wrangler.toml` `[vars]`; two values are secrets.
 | --- | --- |
 | `OIDC_CLIENT_SECRET` | Confidential-client token-endpoint authentication. |
 | `SESSION_HMAC_KEY` | HMAC-SHA256 signing key for the session/state cookies (≥ 32 bytes). |
+| `POLICY_HMAC_KEY` | HMAC-SHA256 signing key for policy snapshots. Set the same value on delivery and publisher workers. |
+
+Generate and set the policy signing key:
+
+```bash
+openssl rand -base64 32
+npx wrangler secret put POLICY_HMAC_KEY
+npx wrangler secret put POLICY_HMAC_KEY --config wrangler.publisher.toml
+```
+
+### `POLICY_SOURCE`
+
+| Mode | Behavior |
+| --- | --- |
+| `auto` | Use a valid signed DA/KV policy when available; otherwise fall back to `ACCESS_POLICY`. |
+| `worker` | Disable DA/KV policy entirely; always use `ACCESS_POLICY`. |
+| `required` | Require a valid signed DA/KV policy for content paths. If no valid or last-known-good policy is available, return `503`. |
 
 ### `ACCESS_POLICY`
 
-One normalized rule shape — `{ path, tier (public|protected|secured), audience? }` —
-evaluated by **most-specific match** (exact path beats glob; longer literal prefix beats
-shorter). `audience` (optional) is the set of groups/entitlements allowed once
-authenticated. Unmatched paths fall to `default_tier`.
+`ACCESS_POLICY` is no longer the primary content authorization surface when
+`POLICY_SOURCE=auto` or `required`. It remains important for:
+
+- worker-managed paths such as auth routes and public EDS infrastructure
+- emergency fallback when `POLICY_SOURCE=auto`
+- `default_tier`, which is still operator configuration and is not authored in DA
+
+One normalized rule shape is `{ path, tier (public|protected|secured), audience? }`.
 
 ```toml
 ACCESS_POLICY = '''{
   "rules": [
-    { "path": "/",              "tier": "public" },
-    { "path": "/blog/*",        "tier": "public" },
-    { "path": "/scripts/*",     "tier": "public" },
-    { "path": "/styles/*",      "tier": "public" },
-    { "path": "/blocks/*",      "tier": "public" },
-    { "path": "/icons/*",       "tier": "public" },
-    { "path": "/fonts/*",       "tier": "public" },
-    { "path": "/media_*",       "tier": "public" },
-    { "path": "/*.plain.html",  "tier": "public" },
-    { "path": "/sitemap.xml",   "tier": "public" },
-    { "path": "/robots.txt",    "tier": "public" },
-    { "path": "/.well-known/*", "tier": "public" },
-    { "path": "/members/*",     "tier": "protected", "audience": ["site-readers"] },
-    { "path": "/account/*",     "tier": "protected", "audience": ["site-readers"] },
-    { "path": "/api/*",         "tier": "secured",   "audience": ["site-readers"] },
-    { "path": "/secure-data/*", "tier": "secured",   "audience": ["site-readers"] }
+    { "path": "/*",                  "tier": "public" },
+    { "path": "/scripts/**",         "tier": "public" },
+    { "path": "/styles/**",          "tier": "public" },
+    { "path": "/blocks/**",          "tier": "public" },
+    { "path": "/icons/**",           "tier": "public" },
+    { "path": "/fonts/**",           "tier": "public" },
+    { "path": "/media_*",            "tier": "public" },
+    { "path": "/nav.plain.html",     "tier": "public" },
+    { "path": "/footer.plain.html",  "tier": "public" },
+    { "path": "/sitemap.xml",        "tier": "public" },
+    { "path": "/robots.txt",         "tier": "public" },
+    { "path": "/.well-known/**",     "tier": "public" }
   ],
   "default_tier": "protected"
 }'''
 ```
 
 > **EDS infrastructure must be public, or the site won't render.** With deny-by-default
-> (`default_tier: protected`), enumerate the EDS namespace as `public`: `/scripts/*`,
-> `/styles/*`, `/blocks/*`, `/icons/*`, `/fonts/*`, hashed `/media_*`, `.plain.html`
-> fragments, plus `/sitemap.xml`, `/robots.txt`, `/.well-known/*` (all included above).
+> (`default_tier: protected`), enumerate the EDS namespace as `public`: `/scripts/**`,
+> `/styles/**`, `/blocks/**`, `/icons/**`, `/fonts/**`, hashed `/media_*`, only the
+> allowed `nav`/`footer` `.plain.html` fragments, plus `/sitemap.xml`, `/robots.txt`,
+> `/.well-known/**` (all included above).
 > Verify the exact infra path set for your project against the EDS docs. `default_tier`
 > then applies only to content routes.
+
+### Audience Mapping
+
+The DA sheet uses normalized audience names. The worker maps raw IdP groups/roles into
+those names with `AUDIENCE_MAP`; unmapped values are dropped before the session cookie is
+minted.
+
+```toml
+AUDIENCE_MAP = '{"medical":["medical"],"secure":["secure"],"market-access":["market-access"]}'
+```
+
+For Auth0, the worker reads the namespaced custom claim
+`https://oidc.workers.dev/groups` first, then falls back to `groups` and `roles`.
+Existing sessions keep their mapped audiences until their normal session TTL expires.
 
 > **Auth0** works as the OP via the generic flow. Auth0 silently drops non-namespaced custom
 > claims from tokens, so roles must be injected under a namespaced key
@@ -264,7 +425,7 @@ ACCESS_POLICY = '''{
 
 > **Adobe IMS** works as the OP via the generic flow, but IMS does **not** emit a `groups`
 > claim in the `id_token` — entitlements require a post-login profile lookup and a
-> product-profile↔group mapping. That is **Phase 2**, deliberately out of the core gate; see
+> product-profile↔group mapping. That extension is deliberately out of the core gate; see
 > [`folder-authorization.md`](./folder-authorization.md).
 
 ## Local development
