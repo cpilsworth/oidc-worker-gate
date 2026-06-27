@@ -5,6 +5,11 @@ import {
 } from "./policy-publisher.js";
 import { DEFAULT_WORKER_MANAGED_PATHS } from "./policy-defaults.js";
 
+const ALLOWED_CORS_ORIGINS = [
+  /^https:\/\/([a-z0-9-]+--)?authz--cpilsworth\.aem\.(live|page)$/,
+  /^https:\/\/da\.live$/,
+];
+
 export default {
   async fetch(request, env) {
     return handlePublisherRequest(request, env);
@@ -12,43 +17,44 @@ export default {
 };
 
 export async function handlePublisherRequest(request, env) {
-  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-  if (!env.OIDC_CACHE) return json({ error: "missing_kv_binding" }, 500);
-  if (!env.POLICY_HMAC_KEY) return json({ error: "missing_policy_hmac_key" }, 500);
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
+  if (request.method !== "POST") return json(request, { error: "method_not_allowed" }, 405);
+  if (!env.OIDC_CACHE) return json(request, { error: "missing_kv_binding" }, 500);
+  if (!env.POLICY_HMAC_KEY) return json(request, { error: "missing_policy_hmac_key" }, 500);
 
   const daToken = bearerToken(request.headers.get("authorization"));
-  if (!daToken) return json({ error: "missing_da_token" }, 401);
+  if (!daToken) return json(request, { error: "missing_da_token" }, 401);
 
   let event;
   try {
     event = await request.json();
   } catch {
-    return json({ error: "invalid_json" }, 400);
+    return json(request, { error: "invalid_json" }, 400);
   }
 
   let siteId;
   try {
     siteId = resolveSiteId(event);
   } catch (err) {
-    return json({ error: "invalid_site", message: err.message }, 400);
+    return json(request, { error: "invalid_site", message: err.message }, 400);
   }
 
   const sites = loadSiteConfig(env);
   const siteConfig = sites[siteId];
-  if (!siteConfig) return json({ error: "site_not_allowed", site_id: siteId }, 403);
+  if (!siteConfig) return json(request, { error: "site_not_allowed", site_id: siteId }, 403);
 
   let document;
   try {
     document = await fetchDaPolicy(siteId, daToken, env.DA_BASE_URL);
   } catch (err) {
-    return json({ error: "da_fetch_failed", site_id: siteId, da_url: err.daUrl || null, message: err.message }, 502);
+    return json(request, { error: "da_fetch_failed", site_id: siteId, da_url: err.daUrl || null, message: err.message }, 502);
   }
 
   let rows;
   try {
     rows = extractRowsFromDaDocument(document);
   } catch (err) {
-    return json({ error: "invalid_da_policy_document", site_id: siteId, message: err.message }, 422);
+    return json(request, { error: "invalid_da_policy_document", site_id: siteId, message: err.message }, 422);
   }
 
   const result = await publishPolicyRows(rows, {
@@ -63,7 +69,7 @@ export async function handlePublisherRequest(request, env) {
   logPublishResult(siteId, result);
 
   if (result.errors.length > 0) {
-    return json({
+    return json(request, {
       status: "validation_failed",
       site_id: siteId,
       errors: result.errors,
@@ -72,7 +78,7 @@ export async function handlePublisherRequest(request, env) {
     }, 422);
   }
 
-  return json({
+  return json(request, {
     status: "published",
     site_id: siteId,
     version: result.payload.version,
@@ -133,12 +139,25 @@ function logPublishResult(siteId, result) {
   });
 }
 
-function json(body, status = 200) {
+function corsHeaders(request) {
+  const origin = request.headers.get("origin") || "";
+  const allowed = ALLOWED_CORS_ORIGINS.some((pattern) => pattern.test(origin));
+  return {
+    "access-control-allow-origin": allowed ? origin : "null",
+    vary: "Origin",
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-headers": "Authorization, Content-Type, Accept",
+    "access-control-max-age": "86400",
+  };
+}
+
+function json(request, body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "private, no-store",
+      ...corsHeaders(request),
     },
   });
 }

@@ -45,6 +45,13 @@ function req(body, headers = {}) {
   });
 }
 
+function options(headers = {}) {
+  return new Request("https://publisher.example.com/", {
+    method: "OPTIONS",
+    headers,
+  });
+}
+
 function mockDa(rows, status = 200) {
   vi.stubGlobal("fetch", vi.fn(async (url, init) => {
     return new Response(JSON.stringify({ data: rows, source_version: "da-v1", url, auth: init.headers.authorization }), {
@@ -60,12 +67,36 @@ afterEach(() => {
 });
 
 describe("publisher worker", () => {
+  it("answers browser preflight for allowed DA origins", async () => {
+    const res = await handlePublisherRequest(options({
+      origin: "https://main--authz--cpilsworth.aem.live",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "authorization,content-type,accept",
+    }), env());
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBe("https://main--authz--cpilsworth.aem.live");
+    expect(res.headers.get("access-control-allow-methods")).toBe("POST, OPTIONS");
+    expect(res.headers.get("access-control-allow-headers")).toBe("Authorization, Content-Type, Accept");
+    expect(res.headers.get("access-control-max-age")).toBe("86400");
+    expect(res.headers.get("vary")).toBe("Origin");
+  });
+
+  it("does not grant credentialed CORS to unknown origins", async () => {
+    const res = await handlePublisherRequest(options({ origin: "https://example.com" }), env());
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBe("null");
+  });
+
   it("publishes an allow-listed site from DA source", async () => {
     mockDa([{ path: "/members/**", tier: "protected", audience: "medical" }]);
     const e = env();
 
-    const res = await handlePublisherRequest(req({ site_id: siteId }), e);
+    const res = await handlePublisherRequest(req({ site_id: siteId }, {
+      origin: "https://da.live",
+    }), e);
     expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBe("https://da.live");
     await expect(res.json()).resolves.toMatchObject({
       status: "published",
       site_id: siteId,
@@ -102,8 +133,12 @@ describe("publisher worker", () => {
   });
 
   it("rejects missing DA token", async () => {
-    const res = await handlePublisherRequest(req({ site_id: siteId }, { authorization: "" }), env());
+    const res = await handlePublisherRequest(req({ site_id: siteId }, {
+      authorization: "",
+      origin: "https://main--authz--cpilsworth.aem.page",
+    }), env());
     expect(res.status).toBe(401);
+    expect(res.headers.get("access-control-allow-origin")).toBe("https://main--authz--cpilsworth.aem.page");
     await expect(res.json()).resolves.toMatchObject({ error: "missing_da_token" });
   });
 
@@ -140,5 +175,6 @@ describe("publisher worker", () => {
   it("allows only POST", async () => {
     const res = await handlePublisherRequest(new Request("https://publisher.example.com/"), env());
     expect(res.status).toBe(405);
+    expect(res.headers.get("access-control-allow-origin")).toBe("null");
   });
 });
