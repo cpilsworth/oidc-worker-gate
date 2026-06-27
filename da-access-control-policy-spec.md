@@ -16,8 +16,10 @@ infrastructure paths, gate-owned routes, or unmatched-path fallback behavior.
 
 ## Source model
 
-- One policy sheet exists per DA site at:
-  `da.live/{org}/{site}/config/access-control`.
+- One policy sheet exists per DA site as the `access-control` sheet in the DA site
+  configuration.
+- The publisher reads the multi-sheet config document from
+  `https://admin.da.live/config/{org}/{site}/` with the incoming DA token.
 - The `POLICY_SITE_ID` worker/publisher config uses the format `org/site`.
 - The publisher infers `{org}` and `{site}` from `POLICY_SITE_ID`.
 - The sheet contains a single table of policy rows.
@@ -151,9 +153,10 @@ Media remains public for the MVP. Confidential media requires a separate design.
   - `auto`: use a valid signed DA/KV policy when available; otherwise fall back to the
     static worker policy.
   - `worker`: disable DA/KV policy entirely and always use the static worker policy.
+  - `required`: require a valid signed DA/KV policy for content paths; if no valid policy
+    or last-known-good policy is available, return `503` instead of using the static
+    fallback.
 - `auto` is the recommended default.
-- A future `required` mode may require a valid DA/KV policy before serving content paths,
-  but it is not part of Phase 1.
 - The worker logs the active `POLICY_SOURCE` mode and whether a request is using DA/KV
   policy, last-known-good policy, or static worker fallback.
 - `default_tier` remains worker/operator configuration.
@@ -223,7 +226,7 @@ The normal path is automatic:
 2. The separate publisher Worker receives the notification.
 3. The request includes a DA token.
 4. The publisher uses that token to read the configured access-control document:
-   `da.live/{org}/{site}/config/access-control`.
+   `https://admin.da.live/config/{org}/{site}/`.
 5. The publisher parses, validates, normalizes, signs, and writes the snapshot to KV.
 
 The publisher does not trust the event payload as policy content. It treats the event as a

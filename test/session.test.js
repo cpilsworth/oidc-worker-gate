@@ -4,7 +4,11 @@ import { SESSION_COOKIE, mintSessionCookie, readSession, clearSessionCookie,
 import { sign } from "../src/cookies.js";
 import { reqFor, getSetCookie } from "./helpers.js";
 
-const config = { sessionKey: "test-hmac-key-at-least-32-bytes-long!!", sessionTtlSeconds: 3600 };
+const config = {
+  sessionKey: "test-hmac-key-at-least-32-bytes-long!!",
+  sessionTtlSeconds: 3600,
+  audienceMap: { "site-readers": ["site-readers"], admins: ["raw-admin"] },
+};
 
 async function signedSessionCookie(body) {
   const token = await sign(JSON.stringify(body), config.sessionKey);
@@ -29,6 +33,14 @@ describe("session", () => {
     expect(s.groups).toEqual(["site-readers"]);
     expect(s.email).toBeUndefined();
     expect(s.name).toBeUndefined();
+  });
+
+  it("stores normalized audiences and drops unmapped raw values", async () => {
+    const setCookie = await mintSessionCookie(
+      { sub: "user-123", groups: ["raw-admin", "unmapped"] }, config);
+    const value = setCookie.match(/__gate_session=([^;]*)/)[1];
+    const s = await readSession(reqFor("/members/x", { cookie: `__gate_session=${value}` }), config);
+    expect(s.groups).toEqual(["admins"]);
   });
 
   it("returns null for an expired session", async () => {

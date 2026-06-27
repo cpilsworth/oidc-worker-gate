@@ -44,7 +44,7 @@ export async function mintSessionCookie(claims, config) {
   const now = Math.floor(Date.now() / 1000);
   const session = {
     sub: claims.sub,
-    groups: claims["https://oidc.workers.dev/groups"] || claims.groups || claims.roles || [],
+    groups: normalizeAudiences(extractClaimGroups(claims), config.audienceMap),
     iat: now, exp: now + config.sessionTtlSeconds,
   };
   const token = await sign(JSON.stringify(session), config.sessionKey);
@@ -73,3 +73,27 @@ export async function readStateCookie(req, config) {
 }
 
 export function clearStateCookie() { return serializeCookie(STATE_COOKIE, "", { maxAge: 0 }); }
+
+function extractClaimGroups(claims) {
+  const values = claims["https://oidc.workers.dev/groups"] || claims.groups || claims.roles || [];
+  return Array.isArray(values) ? values.filter((v) => typeof v === "string" && v) : [];
+}
+
+function normalizeAudiences(values, audienceMap = {}) {
+  const entries = Object.entries(audienceMap || {});
+  const out = new Set();
+  const reverse = new Map();
+  for (const [audience, rawValues] of entries) {
+    if (!Array.isArray(rawValues)) continue;
+    for (const raw of rawValues) {
+      if (typeof raw === "string" && raw) reverse.set(raw, audience);
+    }
+  }
+
+  for (const value of values) {
+    const audience = reverse.get(value);
+    if (audience) out.add(audience);
+    else console.info("audience mapping miss", { value });
+  }
+  return [...out];
+}

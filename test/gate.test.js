@@ -4,7 +4,16 @@ import { createMockOp } from "./mock-op.js";
 import { mintSessionCookie } from "../src/session.js";
 import { seedDiscovery } from "./helpers.js";
 
-const config = { sessionKey: "test-hmac-key-at-least-32-bytes-long!!", sessionTtlSeconds: 3600 };
+const config = {
+  sessionKey: "test-hmac-key-at-least-32-bytes-long!!",
+  sessionTtlSeconds: 3600,
+  audienceMap: {
+    secure: ["secure"],
+    medical: ["medical"],
+    "market-access": ["market-access"],
+    "other-group": ["other-group"],
+  },
+};
 
 async function sessionCookie(groups) {
   const sc = await mintSessionCookie({ sub: "user-123", groups }, config);

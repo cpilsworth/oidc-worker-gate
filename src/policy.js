@@ -24,15 +24,40 @@ export function isAuthorized(session, audience) {
   return audience.some((a) => groups.includes(a));
 }
 
-function specificity(pattern) {
+export function specificity(pattern) {
   const star = pattern.indexOf("*");
   if (star === -1) return 1000 + pattern.length;   // exact patterns rank above any glob
   return pattern.slice(0, star).length;            // else longest literal prefix wins
 }
 
-function matchGlob(pattern, path) {
-  const re = new RegExp("^" + pattern.split("*").map(escapeRe).join(".*") + "$");
-  return re.test(path);
+export function matchGlob(pattern, path) {
+  if (typeof pattern !== "string" || typeof path !== "string") return false;
+  if (!pattern.includes("*")) return pattern === path;
+  return patternToRegExp(pattern).test(path);
+}
+
+function patternToRegExp(pattern) {
+  if (pattern.endsWith("/**")) {
+    const base = pattern.slice(0, -3);
+    return new RegExp(`^${escapeRe(base)}(?:/.*)?/?$`);
+  }
+
+  let out = "^";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch !== "*") {
+      out += escapeRe(ch);
+      continue;
+    }
+
+    if (pattern[i + 1] === "*") {
+      out += ".*";
+      i++;
+    } else {
+      out += "[^/]*";
+    }
+  }
+  return new RegExp(out + "$");
 }
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }

@@ -7,11 +7,13 @@ users against any standards-compliant OpenID Provider (Okta, Entra ID, Ping, Aut
 IMS, …), and enforces access **before** anything reaches the origin — without the EDS
 project itself knowing anything about OIDC.
 
-> **Status: Phase 1 implemented** — 10 source modules, 11 test files, **72 tests passing**
-> in the real `workerd` runtime. This is a research / reference implementation (see
-> [Limitations](#limitations)). The multi-phase roadmap and the implementation record live
-> in [`phase-1-plan.md`](./phase-1-plan.md); identity/folder-authz design is in
-> [`folder-authorization.md`](./folder-authorization.md).
+> **Status:** delivery gate, DA policy compiler, manual publish, and publisher-worker
+> refresh path are implemented and tested in the real `workerd` runtime. This is a research
+> / reference implementation (see [Limitations](#limitations)). DA policy design lives in
+> [`da-access-control-policy-spec.md`](./da-access-control-policy-spec.md), and operational
+> deployment steps live in [`operations.md`](./operations.md).
+> DA publish/change event wiring is intentionally deferred for now; use the manual
+> `npm run refresh-policy` command to refresh the signed KV policy after DA sheet changes.
 > Auth0 setup guide: [`auth0-setup.md`](./auth0-setup.md).
 
 ## What it does
@@ -30,8 +32,11 @@ project itself knowing anything about OIDC.
 - **Local, fast session enforcement.** After login the gate mints its own HMAC-signed
   session cookie; every subsequent request is validated locally (no IdP/backend round-trip),
   so the authenticated hot path is a **single origin `fetch()`**.
-- **Audience authorization.** A policy row may require an `audience`; the session's
-  groups/entitlements must intersect it or the gate returns `403`.
+- **Audience authorization.** A policy row may require an `audience`; the session's mapped
+  groups must intersect it or the gate returns `403`.
+- **DA-authored policy support.** Content access rules can be authored in the
+  `access-control` sheet of the DA site configuration, compiled by a separate publisher
+  worker, signed with `POLICY_HMAC_KEY`, stored in KV, and enforced by the delivery worker.
 - **Deny-by-default.** Unmatched paths fall to a configurable `default_tier` (recommended:
   `protected`), so a new route is never accidentally exposed.
 - **AEM BYO-CDN origin forwarding** with the correct `Host` / `X-Forwarded-Host` /
@@ -107,7 +112,9 @@ oidc-worker-gate/
 │   ├── config.js    # Load env bindings (vars + secrets + KV) into a Config
 │   └── encoding.js  # base64url, UTF-8, constant-time compare
 ├── test/            # vitest + in-process mock-OP harness (see conformance-testing.md)
-├── wrangler.toml    # CF config: route, vars, KV binding
+├── scripts/         # policy publish, refresh, and status inspection commands
+├── wrangler.toml    # delivery worker config: route, vars, KV binding
+├── wrangler.publisher.toml # policy publisher worker config
 └── package.json
 ```
 
@@ -148,6 +155,8 @@ npx wrangler kv namespace create OIDC_CACHE
 ```bash
 npx wrangler secret put OIDC_CLIENT_SECRET      # from your IdP client registration
 npx wrangler secret put SESSION_HMAC_KEY        # e.g. `openssl rand -base64 32`
+npx wrangler secret put POLICY_HMAC_KEY         # same value as publisher worker
+npx wrangler secret put POLICY_HMAC_KEY --config wrangler.publisher.toml
 ```
 
 **4. Register the client at your IdP:** allow `REDIRECT_URI`
@@ -165,6 +174,7 @@ routes = [{ pattern = "www.example.com/*", zone_name = "example.com" }]
 
 ```bash
 npx wrangler deploy
+npm run deploy:publisher
 ```
 
 - A **public** path (e.g. `/`) returns the EDS page.
@@ -348,11 +358,19 @@ release/certification gate, not a per-build requirement — see
 
 ## Roadmap
 
-Phase 1 (this gate) is implemented. Phase 2 adds Adobe IMS as the OP with a post-login
-entitlement lookup; Phase 3 adds DA-authored, delegated folder-level authorization
-distributed to the worker via KV. See the roadmap table and implementation record in
-[`phase-1-plan.md`](./phase-1-plan.md) and the identity/authz design in
-[`folder-authorization.md`](./folder-authorization.md).
+The delivery gate, DA-authored policy compiler, publisher worker, and manual refresh path
+are implemented. Automatic DA publish/change event integration is deferred; until then,
+refresh policy explicitly with `npm run refresh-policy` after publishing sheet changes.
+
+`POLICY_SOURCE` controls policy availability behavior:
+
+- `auto`: use signed DA/KV policy when available, otherwise static worker fallback.
+- `worker`: ignore DA/KV policy and use only static worker policy.
+- `required`: require signed DA/KV policy for content paths; if no valid policy or
+  last-known-good policy is available, return `503`.
+
+See the roadmap table and implementation record in [`phase-1-plan.md`](./phase-1-plan.md)
+and the identity/authz design in [`folder-authorization.md`](./folder-authorization.md).
 
 ## Limitations
 

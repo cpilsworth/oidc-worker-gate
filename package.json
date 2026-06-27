@@ -6,6 +6,10 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:publisher": "wrangler deploy --config wrangler.publisher.toml",
+    "policy-status": "node scripts/policy-status.js",
+    "publish-policy": "node scripts/publish-policy.js",
+    "refresh-policy": "node scripts/refresh-policy.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -1,0 +1,19 @@
+name = "oidc-worker-gate-policy-publisher"
+main = "src/publisher-worker.js"
+compatibility_date = "2025-06-01"
+
+[[kv_namespaces]]
+binding = "OIDC_CACHE"
+id = "d4bec63e176f41b0902126d281e9be2e"
+
+[vars]
+DA_BASE_URL = "https://admin.da.live/config"
+PUBLISHER_SITES = '''{
+  "cpilsworth/authz": {
+    "audience_map": {
+      "medical": ["medical"],
+      "secure": ["secure"],
+      "market-access": ["market-access"]
+    }
+  }
+}'''

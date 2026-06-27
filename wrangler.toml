@@ -12,28 +12,34 @@ CLIENT_ID         = "IgIFZftc6r4IkUBxGhgfwCBgTQaaMpeO"
 REDIRECT_URI      = "https://oidc-worker-gate.cpilsworth.workers.dev/.auth/callback"
 SCOPES            = "openid profile email"
 SESSION_TTL       = "3600"
-ORIGIN_HOSTNAME   = "main--j2retail--cpilsworth.aem.live"
+ORIGIN_HOSTNAME   = "main--authz--cpilsworth.aem.live"
 FORWARDED_HOST    = "oidc-worker-gate.cpilsworth.workers.dev"
 PUSH_INVALIDATION = "enabled"
 ROUTES            = '{"callback":"/.auth/callback","logout":"/.auth/logout"}'
+POLICY_SOURCE     = "auto"
+POLICY_SITE_ID    = "cpilsworth/authz"
+AUDIENCE_MAP      = '{"medical":["medical"],"secure":["secure"],"market-access":["market-access"]}'
 ACCESS_POLICY     = '''{
   "rules": [
-    { "path": "/*",              "tier": "public" },
-    { "path": "/blog/*",        "tier": "public" },
-    { "path": "/scripts/*",     "tier": "public" },
-    { "path": "/styles/*",      "tier": "public" },
-    { "path": "/blocks/*",      "tier": "public" },
-    { "path": "/icons/*",       "tier": "public" },
-    { "path": "/fonts/*",       "tier": "public" },
+    { "path": "/*",             "tier": "public" },
+    { "path": "/blog/**",       "tier": "public" },
+    { "path": "/scripts/**",    "tier": "public" },
+    { "path": "/styles/**",     "tier": "public" },
+    { "path": "/blocks/**",     "tier": "public" },
+    { "path": "/icons/**",      "tier": "public" },
+    { "path": "/fonts/**",      "tier": "public" },
     { "path": "/media_*",       "tier": "public" },
-    { "path": "/*.plain.html",  "tier": "public" },
+    { "path": "/nav.plain.html", "tier": "public" },
+    { "path": "/footer.plain.html", "tier": "public" },
+    { "path": "/content/nav.plain.html", "tier": "public" },
+    { "path": "/content/footer.plain.html", "tier": "public" },
     { "path": "/sitemap.xml",   "tier": "public" },
     { "path": "/robots.txt",    "tier": "public" },
-    { "path": "/.well-known/*", "tier": "public" },
-    { "path": "/members/*",     "tier": "protected", "audience": ["medical"] },
-    { "path": "/account/*",     "tier": "protected", "audience": ["medical"] },
+    { "path": "/.well-known/**", "tier": "public" },
+    { "path": "/members/**",    "tier": "protected", "audience": ["medical"] },
+    { "path": "/account/**",    "tier": "protected", "audience": ["medical"] },
     { "path": "/api/*",         "tier": "secured",   "audience": ["secure"] },
-    { "path": "/secure-data/*", "tier": "secured",   "audience": ["secure"] }
+    { "path": "/secure-data/**", "tier": "secured",  "audience": ["secure"] }
   ],
   "default_tier": "protected"
 }'''

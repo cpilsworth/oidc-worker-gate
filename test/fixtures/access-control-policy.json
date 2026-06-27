@@ -1,0 +1,50 @@
+[
+  {
+    "path": "/",
+    "tier": "public",
+    "audience": "",
+    "description": "Home page is public content."
+  },
+  {
+    "path": "/blog/**",
+    "tier": "public",
+    "audience": "",
+    "description": "Public blog section."
+  },
+  {
+    "path": "/members/**",
+    "tier": "protected",
+    "audience": "medical",
+    "description": "Members area for the medical audience."
+  },
+  {
+    "path": "/account/**",
+    "tier": "protected",
+    "audience": "medical",
+    "description": "Account pages for signed-in medical users."
+  },
+  {
+    "path": "/api/*",
+    "tier": "secured",
+    "audience": "secure",
+    "description": "API endpoints return JSON 401 instead of login redirects."
+  },
+  {
+    "path": "/secure-data/**",
+    "tier": "secured",
+    "audience": "secure",
+    "description": "Secured data section."
+  },
+  {
+    "path": "/media_*",
+    "tier": "protected",
+    "audience": "medical",
+    "description": "Intentional reserved-path overlap; publisher should ignore and report it."
+  },
+  {
+    "path": "/authenticated/**",
+    "tier": "protected",
+    "audience": "",
+    "description": "Any authenticated user can access; publisher should warn."
+  }
+]

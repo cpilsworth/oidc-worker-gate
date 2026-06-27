@@ -4,11 +4,11 @@ import { classify, isAuthorized } from "../src/policy.js";
 const policy = {
   rules: [
     { path: "/", tier: "public" },
-    { path: "/blog/*", tier: "public" },
+    { path: "/blog/**", tier: "public" },
     { path: "/media_*", tier: "public" },
-    { path: "/*.plain.html", tier: "public" },
-    { path: "/members/*", tier: "protected", audience: ["site-readers"] },
-    { path: "/members/admin/*", tier: "protected", audience: ["admins"] },
+    { path: "/nav.plain.html", tier: "public" },
+    { path: "/members/**", tier: "protected", audience: ["site-readers"] },
+    { path: "/members/admin/**", tier: "protected", audience: ["admins"] },
     { path: "/api/*", tier: "secured", audience: ["site-readers"] },
   ],
   default_tier: "protected",
@@ -21,7 +21,15 @@ describe("classify", () => {
   it("prefix globs match", () => {
     expect(classify("/blog/2026/post", policy).tier).toBe("public");
     expect(classify("/media_abc123.png", policy).tier).toBe("public");
-    expect(classify("/foo.plain.html", policy).tier).toBe("public");
+    expect(classify("/nav.plain.html", policy).tier).toBe("public");
+  });
+  it("single-star globs do not cross path separators", () => {
+    expect(classify("/api/orders", policy)).toEqual({ tier: "secured", audience: ["site-readers"] });
+    expect(classify("/api/orders/1", policy)).toEqual({ tier: "protected", audience: undefined });
+  });
+  it("terminal recursive globs include the folder itself", () => {
+    expect(classify("/members", policy)).toEqual({ tier: "protected", audience: ["site-readers"] });
+    expect(classify("/members/", policy)).toEqual({ tier: "protected", audience: ["site-readers"] });
   });
   it("most-specific rule wins (longer literal prefix)", () => {
     expect(classify("/members/x", policy)).toEqual({ tier: "protected", audience: ["site-readers"] });
