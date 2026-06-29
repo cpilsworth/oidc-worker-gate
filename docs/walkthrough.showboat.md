@@ -34,12 +34,9 @@ Throughout the source you'll see comment tags like `H1`, `H4`, `N5`, `S4`. The
 `S*` tags mark **shared-helper** refactors. This walkthrough explains the *why*
 behind the important ones as we hit them.
 
-> This is the reading copy, optimized for GitHub. Every snippet was pulled
-> directly from the source. A re-runnable companion —
-> [`walkthrough.showboat.md`](./walkthrough.showboat.md) — carries the same
-> content as an executable [showboat](https://pypi.org/project/showboat/)
-> document; `cd oidc-worker-gate && showboat verify docs/walkthrough.showboat.md`
-> re-executes every snippet and confirms it still matches the code.
+> Every code block below is run by `showboat exec`, so the snippets are pulled
+> live from the source. Run `cd oidc-worker-gate && showboat verify docs/walkthrough.showboat.md`
+> to confirm the walkthrough still matches the code.
 
 ### The `src/` modules
 
@@ -47,7 +44,12 @@ Here is the full surface we'll walk through. The two `export default` entry
 points are `index.js` (delivery) and `publisher-worker.js` (publisher);
 everything else is a focused helper.
 
-```text
+```bash
+git ls-files src | sort
+
+```
+
+```output
 src/config.js
 src/cookies.js
 src/encoding.js
@@ -76,7 +78,12 @@ distinct outcome (forward, redirect, 401/403/400/503).
 
 Read it top to bottom as the decision tree it is:
 
-```js
+```bash
+sed -n '10,74p' src/index.js
+
+```
+
+```output
 export default {
   /**
    * @param {Request} request
@@ -172,7 +179,12 @@ The two small helpers below encode the policy-source split and the fail-closed
 `503`. Note `isWorkerManagedPath` uses `matchesAny` against the static
 worker-managed path list — infrastructure paths never depend on the DA policy:
 
-```js
+```bash
+sed -n '76,101p' src/index.js
+
+```
+
+```output
 async function policyForPath(pathname, config) {
   if (isWorkerManagedPath(pathname, config)) {
     return { policy: config.policy, source: "worker-managed", version: "static" };
@@ -212,7 +224,12 @@ Two ideas dominate this file: **fail-fast validation** of anything that could
 silently break auth, and a **stable-reference memoization** that keeps the hot
 path cheap.
 
-```js
+```bash
+sed -n '18,50p' src/config.js
+
+```
+
+```output
 export function loadConfig(env) {
   const sessionKey = requiredKey(env, "SESSION_HMAC_KEY");
   const clientSecret = required(env, "OIDC_CLIENT_SECRET");
@@ -265,7 +282,12 @@ Now the validation and memoization helpers. The key-length floor, the
 positive-integer guard, and the parse memoization each prevent a specific
 silent failure:
 
-```js
+```bash
+sed -n '52,96p' src/config.js
+
+```
+
+```output
 function required(env, key) {
   const v = env[key];
   if (!v) throw new Error(`Missing required binding: ${key}`);
@@ -336,7 +358,12 @@ resource was requested — the classic glob-bypass. `normalizePath` derives one
 canonical form that the gate **both classifies and forwards**, so the gate and
 origin can never disagree.
 
-```js
+```bash
+sed -n '32,103p' src/path.js
+
+```
+
+```output
 const MAX_DECODE_PASSES = 5;
 
 export function normalizePath(rawPathname) {
@@ -454,7 +481,12 @@ First, the signing primitives. `canonicalJson` produces a stable, key-sorted
 serialization so the publisher and verifier compute the **same** bytes over the
 same logical payload — signatures can't break on key-ordering differences:
 
-```js
+```bash
+sed -n '7,35p' src/policy-snapshot.js
+
+```
+
+```output
 export function canonicalJson(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -496,7 +528,12 @@ leak via timing). Any failure throws.
 Now the loader. It encodes the `POLICY_SOURCE` strategy from §2 and a two-tier
 TTL cache (fresh → stale → fallback):
 
-```js
+```bash
+sed -n '37,94p' src/policy-snapshot.js
+
+```
+
+```output
 export async function loadRuntimePolicy(config, nowMs = Date.now()) {
   if (config.policySource === "worker") {
     logPolicyMode(config, "worker");
@@ -590,7 +627,12 @@ compile-once matcher caches that §2 and §4 worked to feed with stable referenc
 specific) match; `matchesAny` is the simpler any-match used for worker-managed
 paths; `isAuthorized` does the audience↔groups intersection:
 
-```js
+```bash
+sed -n '20,53p' src/policy.js
+
+```
+
+```output
 export function classify(pathname, policy) {
   // Rules are pre-sorted by specificity (desc), so the first match is the best.
   for (const rule of compilePolicy(policy)) {
@@ -642,7 +684,12 @@ Now the compilation/caching internals and the glob→regex translation. The
 `WeakMap`s here are why the stable references from §2/§4 matter — compile once
 per policy object, reuse across every request:
 
-```js
+```bash
+sed -n '55,109p' src/policy.js
+
+```
+
+```output
 function compilePolicy(policy) {
   let compiled = compiledPolicies.get(policy);
   if (!compiled) {
@@ -719,7 +766,12 @@ isolate.
 override is configured. These are EDS infrastructure and gate-owned paths that
 are classified from static worker config and never depend on the DA policy:
 
-```js
+```bash
+cat src/policy-defaults.js
+
+```
+
+```output
 export const DEFAULT_WORKER_MANAGED_PATHS = [
   "/.auth/**",
   "/scripts/**",
@@ -747,7 +799,12 @@ The cookie names use the **`__Host-` prefix (`H3`)**: browsers only accept these
 when `Secure`, `Path=/`, and `Domain`-less, which blocks a sibling or non-secure
 subdomain from overwriting them.
 
-```js
+```bash
+sed -n '6,56p' src/session.js
+
+```
+
+```output
 // serializeCookie already emits Secure + Path=/ and never sets Domain.
 export const SESSION_COOKIE = "__Host-gate_session";
 export const STATE_COOKIE = "__Host-gate_login";
@@ -812,7 +869,12 @@ Next, minting. The session stores only what the gate needs: `sub`, normalized
 `groups`, `iat`/`exp`, and (optionally) the raw `id_token` — kept *solely* for
 `id_token_hint` on logout and never forwarded to origin:
 
-```js
+```bash
+sed -n '58,112p' src/session.js
+
+```
+
+```output
     const payload = await unsign(token, key);
     if (!payload) return null;
     const value = JSON.parse(payload);
@@ -894,7 +956,12 @@ defaults `Path=/` with no `Domain` — exactly the constraints the `__Host-` pre
 requires. `sign`/`unsign` implement a compact `base64url(payload).base64url(sig)`
 HMAC-SHA256 token, and `unsign` verifies in constant time:
 
-```js
+```bash
+sed -n '21,56p' src/cookies.js
+
+```
+
+```output
 export function serializeCookie(name, value, opts = {}) {
   const parts = [`${name}=${encodeURIComponent(value)}`];
   parts.push(`Path=${opts.path || "/"}`);
@@ -944,7 +1011,12 @@ The lowest layer: `TextEncoder`/`TextDecoder` wrappers, base64url encode/decode
 (URL-safe alphabet, padding stripped), a JWT-segment JSON decoder, and the
 constant-time string comparison used everywhere a secret or signature is checked:
 
-```js
+```bash
+cat src/encoding.js
+
+```
+
+```output
 // Small base64url + text helpers shared by the JWT, PKCE and session modules.
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -993,7 +1065,12 @@ Called when a `protected` path has no valid session. It mints fresh `state`,
 in the short-lived signed state cookie, and 302s the browser to the IdP's
 authorization endpoint:
 
-```js
+```bash
+sed -n '16,33p' src/oidc.js
+
+```
+
+```output
   async startLogin(req, url) {
     const discovery = await getDiscovery(this.config);
     const state = randomState();
@@ -1019,7 +1096,12 @@ its SHA-256 `challenge` travels to the IdP. The matching `code_verifier` is sent
 later in the token exchange, which is what binds the eventual callback to *this*
 browser. `src/pkce.js` is the generator:
 
-```js
+```bash
+cat src/pkce.js
+
+```
+
+```output
 import { base64UrlEncode, utf8 } from "./encoding.js";
 
 function randomString(bytes = 32) {
@@ -1049,7 +1131,12 @@ The most security-dense method. The IdP sends the browser back to
 login *it* started, exchange the code, and validate the resulting token before
 trusting any identity:
 
-```js
+```bash
+sed -n '35,86p' src/oidc.js
+
+```
+
+```output
   async handleCallback(req, url) {
     const saved = await readStateCookie(req, this.config);
     if (!saved) return fail(req, 400, "invalid_login", "missing_or_expired_state");
@@ -1128,7 +1215,12 @@ into login — a rejection is observable rather than an infinite loop. And
 `returnTo` is laundered through `safeReturnTo` (below) so it can only ever be a
 same-origin path:
 
-```js
+```bash
+sed -n '113,131p' src/oidc.js
+
+```
+
+```output
 }
 
 function safeReturnTo(returnTo, origin) {
@@ -1167,7 +1259,12 @@ a logout (`H9` / CSRF). It clears both gate cookies and, if the IdP advertises a
 `end_session_endpoint`, redirects there with `id_token_hint` (the one place the
 retained `id_token` is used):
 
-```js
+```bash
+sed -n '88,110p' src/oidc.js
+
+```
+
+```output
   async handleLogout(req, url) {
     // RP-initiated logout is state-changing; require POST so a cross-site GET
     // cannot force a logout (CSRF — H9).
@@ -1210,7 +1307,12 @@ discovery, fetch JWKS and pick the right key, and fully validate the `id_token`.
 through. The issuer must match what we configured, and every endpoint we'll
 redirect to or POST to must be HTTPS:
 
-```js
+```bash
+sed -n '6,47p' src/jwt.js
+
+```
+
+```output
 export async function getDiscovery(config) {
   const doc = await cachedJson(config.kv, `discovery:${config.issuer}`, async () => {
     const res = await fetch(`${config.issuer}/.well-known/openid-configuration`);
@@ -1261,7 +1363,12 @@ This is the function the callback depends on. It verifies the RS256 signature
 against the JWKS, then checks every claim that matters. The inline `N*` tags map
 each check to a conformance negative-test:
 
-```js
+```bash
+sed -n '56,96p' src/jwt.js
+
+```
+
+```output
   }
 }
 
@@ -1324,7 +1431,12 @@ The key-selection logic handles rotation gracefully. `importSigningKey` matches
 the token's `kid` against the JWKS; on a miss it refetches the JWKS **exactly
 once** (`N7`) to pick up a rotated key before giving up:
 
-```js
+```bash
+sed -n '98,144p' src/jwt.js
+
+```
+
+```output
   if (Array.isArray(claims.aud) && claims.aud.length > 1 && claims.azp !== config.clientId)
     throw new Error("azp required for multi-valued aud");                            // N4b
   if (typeof claims.sub !== "string" || claims.sub.length === 0) throw new Error("sub required");
@@ -1393,7 +1505,12 @@ within its absolute TTL. Both the discovery/JWKS cache and the single-use
 login-state marker go through these two functions, so the wrapper logic lives in
 one place:
 
-```js
+```bash
+sed -n '13,24p' src/kv.js
+
+```
+
+```output
 export async function kvGetFresh(kv, key, { now = Date.now() } = {}) {
   if (!kv) return null;
   const hit = await kv.get(key, "json");
@@ -1419,7 +1536,12 @@ hardening headers exist in exactly one place — and error bodies are *deliberat
 generic* (`H7`): a stable code plus a `request_id`, never an exception message or
 a raw IdP error:
 
-```js
+```bash
+sed -n '12,48p' src/http.js
+
+```
+
+```output
 const NO_STORE = "private, no-store";
 
 /** Build a header bag with the gate's mandatory cache + hardening headers. */
@@ -1469,7 +1591,12 @@ The terminal step for any allowed request. It rewrites the request for AEM's
 BYO-CDN contract, injects trusted identity headers, and — for non-public tiers —
 guarantees per-user content can never be cached or cross-served at the edge:
 
-```js
+```bash
+sed -n '14,67p' src/origin.js
+
+```
+
+```output
 export async function forwardToOrigin(request, session, tier, config, pathname) {
   const inUrl = new URL(request.url);
   const path = pathname || inUrl.pathname;
@@ -1564,7 +1691,12 @@ it into rules, signs the result, and writes it to KV. The delivery worker's
 `errors` (block publish), `warnings` (surface but allow), and `ignored_rules`
 (silently-reserved paths). Author-facing row numbers start at 2 (header is line 1):
 
-```js
+```bash
+sed -n '34,82p' src/policy-publisher.js
+
+```
+
+```output
 
     const path = stringValue(row.path).trim();
     const tier = stringValue(row.tier).trim().toLowerCase();
@@ -1636,7 +1768,12 @@ After per-row processing, `validateEqualSpecificityOverlaps` rejects two rules o
 *equal* specificity that overlap — because then "most specific wins" (§5) would
 be ambiguous and which rule applies would be non-deterministic:
 
-```js
+```bash
+sed -n '184,214p' src/policy-publisher.js
+
+```
+
+```output
 function validateEqualSpecificityOverlaps(rules, errors) {
   for (let i = 0; i < rules.length; i++) {
     for (let j = i + 1; j < rules.length; j++) {
@@ -1681,7 +1818,12 @@ Then the payload is assembled (`schema_version`, `site_id`, `version`,
 three KV keys — `current`, a versioned archive, and a `status` record — but only
 writes the policy when there are zero errors:
 
-```js
+```bash
+sed -n '98,145p' src/policy-publisher.js
+
+```
+
+```output
 export async function buildSignedPolicyEnvelope(rows, options) {
   const result = compilePolicyRows(rows, options);
   if (result.errors.length > 0) return { ...result, envelope: null };
@@ -1747,7 +1889,12 @@ nesting levels — because the exact JSON shape `admin.da.live` returns varies.
 The publisher's `fetch` handler ties it together: CORS preflight, method/binding
 guards, a DA bearer token, site allow-listing, fetch-from-DA, compile, publish:
 
-```js
+```bash
+sed -n '20,68p' src/publisher-worker.js
+
+```
+
+```output
 export async function handlePublisherRequest(request, env) {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
   if (request.method !== "POST") return json(request, { error: "method_not_allowed" }, 405);
@@ -1818,7 +1965,12 @@ The remainder of the handler maps the result to a response — `422` with the
 `errors`/`warnings`/`ignored_rules` on validation failure, or a `published`
 summary on success — and CORS is locked to an explicit origin allow-list:
 
-```js
+```bash
+sed -n '9,12p;143,153p' src/publisher-worker.js
+
+```
+
+```output
 const ALLOWED_CORS_ORIGINS = [
   /^https:\/\/([a-z0-9-]+--)?authz--cpilsworth\.aem\.(live|page)$/,
   /^https:\/\/da\.live$/,
