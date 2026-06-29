@@ -541,34 +541,50 @@ caches origin responses by URL — so per-user content must not be edge-cached:
 
 - **Session cookie `__Host-gate_session`** (transient login state in `__Host-gate_login`):
   `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, HMAC-SHA256 signed; carries `sub`, minimal
-  groups/entitlements, `iat`, `exp` (plus the `id_token` for `id_token_hint` on logout, never
-  forwarded to origin). The `__Host-` prefix means a browser only accepts the cookie when
-  `Secure`, `Path=/`, and Domain-less, so a sibling/non-secure subdomain can't overwrite it.
-  Signing prevents tampering but does **not** hide the payload from the browser — if group
-  names are sensitive, keep them out of the cookie or encrypt the payload.
-- **Path canonicalization:** request paths are normalized (percent-decode, collapse `//`,
-  resolve `.`/`..`) before policy matching, and encoded separators (`%2F`/`%5C`), backslashes,
-  and malformed escapes are rejected with `400`, so the matcher and origin can never disagree
-  about which resource was requested (e.g. `/blog/%2e%2e/members` can't be served as public).
+  groups/entitlements, `iat`, `exp`, and an opaque `jti`. The `id_token` is **not** in the
+  cookie — it is kept server-side in KV keyed by the `jti` (for `id_token_hint` on logout), so
+  no id_token PII sits in the browser and the cookie stays well under the 4 KB limit; it is
+  never forwarded to origin. The two cookies are signed with **independent HKDF-derived keys**
+  (domain separation), both derived from `SESSION_HMAC_KEY`, so a token minted for one purpose
+  can't validate as the other. The `__Host-` prefix means a browser only accepts the cookie
+  when `Secure`, `Path=/`, and Domain-less, so a sibling/non-secure subdomain can't overwrite
+  it. Signing prevents tampering but does **not** hide the (now PII-free) payload from the
+  browser — if group names are sensitive, keep them out of the cookie or encrypt the payload.
+- **Path canonicalization:** request paths are percent-decoded **to a fixpoint** (so a
+  double-encoded `%252e%252e` can't survive classification as a literal yet resolve to a
+  different resource at the origin), `//` collapsed, and `.`/`..` resolved before policy
+  matching. Encoded separators (`%2F`/`%5C` at any encoding depth), backslashes, malformed
+  escapes, and any path that isn't a fixpoint of the URL parser are rejected with `400`. The
+  canonical value the gate classifies is therefore byte-identical to what `new Request`
+  forwards, so matcher and origin can never disagree (e.g. neither `/blog/%2e%2e/members` nor
+  `/blog/%252e%252e/members` can be served as public).
 - **Token validation:** RS256 only (no `alg:none`/HS256 confusion); `iss`/`aud`/`exp`(required)/
   `iat`/`nbf`/`nonce` enforced; `azp` checked when present and required for multi-valued
-  `aud`; `c_hash`/`at_hash` verified (constant-time) when present; JWKS refetched **once** on
-  a `kid` miss for key rotation, then reject. The discovery document is validated before use
-  (its `issuer` must match `OIDC_ISSUER`; `authorization`/`token`/`jwks` endpoints must be
-  `https`).
+  `aud`; `c_hash`/`at_hash` verified (constant-time) when present; the signing JWK is selected
+  by `kty:RSA` + `use≠enc` + `alg` RS256-or-absent (so an encryption key is never chosen), and
+  JWKS is refetched **once** on a `kid` miss for key rotation, then reject. The discovery
+  document is validated before use: its `issuer` must match `OIDC_ISSUER`, and the
+  `authorization`/`token`/`jwks`/`end_session` endpoints must be `https` **and share the
+  issuer's origin** (a multi-host IdP such as Google, whose endpoints live on a different
+  origin, would need a code-level allowlist).
 - **CSRF / replay:** `state` compared constant-time; `nonce` bound into the id_token;
   single-use state marker (KV, best-effort) rejects a replayed callback, and the callback
   **fails closed (`503`) if the KV store is unbound** rather than skipping the check; PKCE
   S256 protects the code exchange.
 - **Logout:** RP-initiated logout is **POST-only** (a cross-site `GET` can't force a logout)
-  and sends `id_token_hint` to the OP's `end_session_endpoint`.
+  and sends `id_token_hint` (resolved from KV via the session `jti`, then deleted) to the OP's
+  `end_session_endpoint`; logout still succeeds with just `client_id` if the hint is absent.
 - **Error responses:** generic JSON bodies (`{ error, request_id }`) with `nosniff` and, on
   `401`, a `WWW-Authenticate` challenge — no IdP/exception text is reflected to the caller.
 - **Open redirect:** post-login `returnTo` validated to same-origin (origin-equality check).
 - **Authorization:** policy-row `audience` intersected with session groups → `403` if empty.
   Per-folder, DA-administered authorization is in [`folder-authorization.md`](./folder-authorization.md).
-- **Revocation:** time-based (cookie `exp`); shorten `SESSION_TTL` to tighten. A KV-backed
-  `sub`/`jti` denylist is a natural extension.
+- **Revocation:** time-based (cookie `exp`); shorten `SESSION_TTL` to tighten. The session
+  already carries a `jti`, so a KV-backed `sub`/`jti` denylist is a natural extension. Rotating
+  the HKDF label suffix (or `SESSION_HMAC_KEY`) invalidates every outstanding cookie at once.
+- **Rate limiting:** not enforced in-worker. Add a Cloudflare rate-limit rule on the login and
+  callback routes (`/.auth/*`) — each callback performs KV writes — to blunt login/KV-write
+  floods. See [`operations.md`](./operations.md).
 
 ## Observability
 

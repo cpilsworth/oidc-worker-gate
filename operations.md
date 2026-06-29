@@ -35,6 +35,14 @@ POLICY_HMAC_KEY=
 The Cloudflare API token should be scoped to the target account and KV namespace. The DA
 token should be constrained to the access-control document path.
 
+> **Treat `DA_TOKEN` as a live credential.** It is a broad-scoped Adobe IMS access token
+> (`aem.frontend.all`, `org.read`, `ab.manage`, …). `.env` is gitignored and has never been
+> committed, but the refresh workflow rewrites the file, so a live token periodically sits on
+> disk. Prefer **short-lived retrieval over persistence**: fetch a fresh token immediately
+> before a refresh/publish run and clear it afterward rather than leaving one parked in `.env`.
+> Confirm no IDE cloud-sync, dotfile backup, or shell-history capture is mirroring `.env`. If a
+> token leaks, revoke it at the IMS source — it does not self-expire instantly.
+
 ## Policy HMAC key
 
 `POLICY_HMAC_KEY` is a shared secret between the publisher and delivery workers. Generate
@@ -66,6 +74,29 @@ npm run deploy:publisher
 
 The publisher worker uses the same `OIDC_CACHE` KV namespace as the delivery worker for the
 current MVP.
+
+> **Session-key rotation forces re-login.** The session and login-state cookies are signed
+> with keys derived (HKDF) from `SESSION_HMAC_KEY`. Deploying a change to `SESSION_HMAC_KEY`
+> (or the derivation label) invalidates every outstanding cookie, so all users re-login once.
+> This is the intended behavior for a security rotation.
+
+## Deployment trust boundary (enforce this)
+
+The delivery worker strips any client-supplied `x-auth-*` header and injects its own
+`x-auth-subject` / `x-auth-groups` from the verified session. **This only holds if the EDS
+origin is unreachable except through the worker.** If `main--authz--cpilsworth.aem.live` is
+directly reachable, anyone can forge `x-auth-groups: medical` and bypass authorization
+entirely. Enforce the boundary operationally — a shared secret header the origin requires,
+mTLS, or network/IP controls — and verify after every deploy that a direct request to the
+origin host (bypassing the worker) is rejected.
+
+## Rate limiting
+
+The worker does not rate-limit. Each OIDC callback performs KV writes (single-use `state`
+marker, id_token storage), so an unthrottled login/callback flood is a KV-write amplifier.
+Add a Cloudflare **rate-limit rule** scoped to the auth routes (`/.auth/callback`,
+`/.auth/logout`, and the login redirect) — e.g. per-IP requests/minute — in the zone's
+Security → WAF rate-limiting rules. This is a dashboard/Terraform control, not worker code.
 
 ## Manual refresh
 
