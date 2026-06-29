@@ -42,12 +42,27 @@ describe("normalizePath (H1)", () => {
     // The core C-1 guarantee: what we classify must equal what new Request(originUrl) resolves to.
     for (const input of [
       "/members/x", "/blog/%252e%252e/members/secret", "/%6d%65%6d%62%65%72%73/x",
-      "/a/b/../c", "//members//x", "/members/",
+      "/a/b/../c", "//members//x", "/members/", "/blog/café", "/a b",
     ]) {
       const r = normalizePath(input);
       expect(r.ok).toBe(true);
       expect(new URL("https://h" + r.path).pathname).toBe(r.path);
     }
+  });
+
+  it("re-encodes (does NOT over-reject) non-ASCII and space — structure is preserved", () => {
+    // The security requirement is segment-structure agreement, not byte-identity, so a
+    // legitimate non-ASCII/space slug must still be served (matching pre-fix behavior).
+    expect(normalizePath("/blog/café").path).toBe("/blog/caf%C3%A9");
+    expect(normalizePath("/blog/caf%C3%A9").path).toBe("/blog/caf%C3%A9");
+    expect(normalizePath("/a b").path).toBe("/a%20b");
+  });
+
+  it("rejects ? / # and ASCII control chars that would diverge at the origin", () => {
+    expect(normalizePath("/foo%23bar").ok).toBe(false); // decoded '#' starts a fragment at re-parse
+    expect(normalizePath("/foo%3Fbar").ok).toBe(false); // decoded '?' starts a query
+    expect(normalizePath("/foo%09bar").ok).toBe(false); // tab is stripped by the URL parser
+    expect(normalizePath("/foo%00bar").ok).toBe(false); // NUL
   });
 
   it("rejects encoded path separators", () => {

@@ -554,10 +554,11 @@ caches origin responses by URL — so per-user content must not be edge-cached:
   double-encoded `%252e%252e` can't survive classification as a literal yet resolve to a
   different resource at the origin), `//` collapsed, and `.`/`..` resolved before policy
   matching. Encoded separators (`%2F`/`%5C` at any encoding depth), backslashes, malformed
-  escapes, and any path that isn't a fixpoint of the URL parser are rejected with `400`. The
-  canonical value the gate classifies is therefore byte-identical to what `new Request`
-  forwards, so matcher and origin can never disagree (e.g. neither `/blog/%2e%2e/members` nor
-  `/blog/%252e%252e/members` can be served as public).
+  escapes, and `?`/`#`/ASCII-control characters (which would truncate or be stripped when the
+  origin re-parses the URL) are rejected with `400`; spaces and non-ASCII slugs are re-encoded
+  to the URL-parser canonical form rather than rejected. The classified value is then
+  byte-identical to what `new Request` forwards, so matcher and origin can never disagree (e.g.
+  neither `/blog/%2e%2e/members` nor `/blog/%252e%252e/members` can be served as public).
 - **Token validation:** RS256 only (no `alg:none`/HS256 confusion); `iss`/`aud`/`exp`(required)/
   `iat`/`nbf`/`nonce` enforced; `azp` checked when present and required for multi-valued
   `aud`; `c_hash`/`at_hash` verified (constant-time) when present; the signing JWK is selected

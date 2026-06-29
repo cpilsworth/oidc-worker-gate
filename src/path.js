@@ -18,8 +18,13 @@
  *    than it forwards. Decoding until stable closes that gap.
  *  - Reject malformed percent-encoding and literal backslashes.
  *  - Collapse duplicate slashes and resolve `.`/`..` (clamping `..` at the root).
- *  - Require the result to be a fixpoint of the URL parser, so the value we
- *    classify is byte-identical to what `new Request(originUrl)` resolves to.
+ *  - Reject `?`/`#` and ASCII control chars: when the origin re-parses the
+ *    forwarded URL these start a query/fragment (truncating the path) or are
+ *    stripped, so they'd diverge from what we classified.
+ *  - Re-encode the result to the URL-parser canonical form (space / non-ASCII
+ *    become percent-escapes without changing segment structure). The value we
+ *    classify is then byte-identical to what `new Request(originUrl)` resolves
+ *    to — without over-rejecting legitimate non-ASCII slugs.
  *
  * @param {string} rawPathname  typically `new URL(request.url).pathname`
  * @returns {{ ok: true, path: string } | { ok: false, reason: string }}
@@ -68,16 +73,31 @@ export function normalizePath(rawPathname) {
   let path = "/" + segments.join("/");
   if (hadTrailingSlash && path !== "/") path += "/";
 
-  // The canonical value must survive a URL-parser round-trip unchanged: that is
-  // exactly the transform `origin.js` applies via `new Request(originUrl)`. Any
-  // residual character the parser would re-encode/resolve (`#`, `?`, raw spaces,
-  // non-ASCII) is not a valid EDS content path — fail closed rather than diverge.
+  // `?`/`#` would start a query/fragment when the origin re-parses the forwarded
+  // URL (truncating the path to a different resource); ASCII control chars (incl.
+  // tab/newline, which the URL parser strips outright) would likewise change the
+  // resource. Reject these so the path we classify can't diverge from what we
+  // forward. (Spaces and non-ASCII are fine — the parser percent-escapes them
+  // without changing segment structure, so they're re-encoded below, not rejected.)
+  if (hasUnsafePathChar(path)) return { ok: false, reason: "illegal character in path" };
+  // Re-encode to the URL-parser canonical form — space / non-ASCII become
+  // percent-escapes WITHOUT changing segment structure — so the classified value
+  // is byte-identical to what `new Request(originUrl)` resolves to, and the result
+  // is idempotent under re-parsing. (No `%` survives the fixpoint decode above, so
+  // this can't double-encode.)
   try {
-    if (new URL("https://x" + path).pathname !== path) {
-      return { ok: false, reason: "non-canonical path" };
-    }
+    path = new URL("https://x" + path).pathname;
   } catch {
     return { ok: false, reason: "non-canonical path" };
   }
   return { ok: true, path };
+}
+
+/** True if the path contains `?`, `#`, an ASCII C0 control (0x00–0x1F), or DEL (0x7F). */
+function hasUnsafePathChar(path) {
+  for (let i = 0; i < path.length; i++) {
+    const c = path.charCodeAt(i);
+    if (c === 0x23 /* # */ || c === 0x3f /* ? */ || c < 0x20 || c === 0x7f) return true;
+  }
+  return false;
 }
