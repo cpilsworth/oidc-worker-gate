@@ -2,7 +2,7 @@ import { getDiscovery, verifyIdToken } from "./jwt.js";
 import { createPkcePair, randomNonce, randomState } from "./pkce.js";
 import {
   clearSessionCookie, clearStateCookie, mintSessionCookie, mintStateCookie,
-  readSession, readStateCookie,
+  readSession, readStateCookie, takeSessionIdToken,
 } from "./session.js";
 import { timingSafeEqual } from "./encoding.js";
 import { errorResponse, requestId } from "./http.js";
@@ -93,6 +93,8 @@ export class OidcClient {
     }
 
     const session = await readSession(req, this.config);
+    // Resolve (and clean up) the server-side id_token kept for id_token_hint (M-3).
+    const idTokenHint = await takeSessionIdToken(session, this.config);
     const discovery = await getDiscovery(this.config).catch(() => ({}));
     const headers = new Headers();
     headers.append("set-cookie", clearSessionCookie());
@@ -101,7 +103,7 @@ export class OidcClient {
       const logout = new URL(discovery.end_session_endpoint);
       logout.searchParams.set("client_id", this.config.clientId);
       logout.searchParams.set("post_logout_redirect_uri", `${url.origin}/`);
-      if (session?.id_token) logout.searchParams.set("id_token_hint", session.id_token);
+      if (idTokenHint) logout.searchParams.set("id_token_hint", idTokenHint);
       headers.set("location", logout.toString());
       return new Response(null, { status: 302, headers });
     }

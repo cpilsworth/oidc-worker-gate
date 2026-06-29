@@ -1,7 +1,12 @@
-import { describe, it, expect } from "vitest";
-import { parseCookies, serializeCookie, sign, unsign } from "../src/cookies.js";
+import { describe, it, expect, beforeAll } from "vitest";
+import { parseCookies, serializeCookie, sign, unsign, deriveCookieKey } from "../src/cookies.js";
 
-const KEY = "test-hmac-key-at-least-32-bytes-long!!";
+const MASTER = "test-hmac-key-at-least-32-bytes-long!!";
+let KEY, OTHER_KEY;
+beforeAll(async () => {
+  KEY = await deriveCookieKey(MASTER, "label-a");
+  OTHER_KEY = await deriveCookieKey(MASTER, "label-b"); // same master, different purpose → different key
+});
 
 describe("cookies", () => {
   it("parses a cookie header into a map", () => {
@@ -20,11 +25,11 @@ describe("cookies", () => {
     expect(c).toContain("SameSite=Lax");
     expect(c).toContain("Max-Age=60");
   });
-  it("sign/unsign round-trips and rejects tampering", async () => {
+  it("sign/unsign round-trips and rejects tampering and a different derived key", async () => {
     const token = await sign(JSON.stringify({ sub: "x" }), KEY);
     expect(await unsign(token, KEY)).toBe('{"sub":"x"}');
     expect(await unsign(token + "x", KEY)).toBeNull();
-    expect(await unsign(token, "wrong-key")).toBeNull();
+    expect(await unsign(token, OTHER_KEY)).toBeNull(); // domain separation: wrong-purpose key fails
   });
 
   it("unsign returns null for garbage tokens without throwing", async () => {

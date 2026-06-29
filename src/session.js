@@ -1,4 +1,5 @@
-import { parseCookies, serializeCookie, sign, unsign } from "./cookies.js";
+import { parseCookies, serializeCookie, sign, unsign, deriveCookieKey } from "./cookies.js";
+import { kvGetFresh, kvPutWithTtl } from "./kv.js";
 
 // `__Host-` prefix (H3): the browser only accepts these when Secure, Path=/ and
 // Domain-less, which blocks a sibling/non-secure subdomain from overwriting them.
@@ -8,6 +9,17 @@ export const STATE_COOKIE = "__Host-gate_login";
 
 /** Cookie names the gate owns — stripped from any origin Set-Cookie response. */
 export const GATE_COOKIE_NAMES = new Set([SESSION_COOKIE, STATE_COOKIE]);
+
+// HKDF labels giving each cookie its own derived signing key (M-4). Bump the
+// version suffix to force a key rotation (invalidates outstanding cookies).
+export const SESSION_KEY_LABEL = "gate-session-v1";
+export const STATE_KEY_LABEL = "gate-login-state-v1";
+
+const sessionSigningKey = (config) => deriveCookieKey(config.sessionKey, SESSION_KEY_LABEL);
+const stateSigningKey = (config) => deriveCookieKey(config.sessionKey, STATE_KEY_LABEL);
+
+/** KV key under which the id_token for a session is stored (M-3). */
+export const idTokenKey = (jti) => `idtoken:${jti}`;
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -20,7 +32,8 @@ function isValidSession(session) {
   if (typeof session.exp !== "number" || !Number.isFinite(session.exp)) return false;
   if (session.exp * 1000 <= Date.now()) return false;
   if (!Array.isArray(session.groups)) return false;
-  if (session.id_token !== undefined && typeof session.id_token !== "string") return false;
+  // M-3: the cookie carries only an opaque session id; the id_token lives in KV.
+  if (session.jti !== undefined && typeof session.jti !== "string") return false;
   return true;
 }
 
@@ -51,8 +64,8 @@ async function readSignedCookie(req, name, key, isValid) {
   }
 }
 
-export function readSession(req, config) {
-  return readSignedCookie(req, SESSION_COOKIE, config.sessionKey, isValidSession);
+export async function readSession(req, config) {
+  return readSignedCookie(req, SESSION_COOKIE, await sessionSigningKey(config), isValidSession);
 }
 
 export async function mintSessionCookie(claims, config, idToken) {
@@ -62,22 +75,36 @@ export async function mintSessionCookie(claims, config, idToken) {
     groups: normalizeAudiences(extractClaimGroups(claims, config.groupsClaim), config.audienceMap),
     iat: now, exp: now + config.sessionTtlSeconds,
   };
-  // Retained solely to send `id_token_hint` on RP-initiated logout (H9). Never
-  // forwarded to origin (see origin.js, which only emits sub/groups).
-  if (typeof idToken === "string" && idToken) session.id_token = idToken;
-  const token = await sign(JSON.stringify(session), config.sessionKey);
+  // Keep the id_token server-side in KV keyed by an opaque session id (M-3): only
+  // the jti — not PII or a 1–2 KB token — lives in the browser cookie. handleLogout
+  // resolves the jti back to the id_token for `id_token_hint` (H9). The id_token is
+  // never forwarded to origin (see origin.js, which only emits sub/groups).
+  if (typeof idToken === "string" && idToken && config.kv) {
+    const jti = crypto.randomUUID();
+    await kvPutWithTtl(config.kv, idTokenKey(jti), idToken, config.sessionTtlSeconds);
+    session.jti = jti;
+  }
+  const token = await sign(JSON.stringify(session), await sessionSigningKey(config));
   return serializeCookie(SESSION_COOKIE, token, { maxAge: config.sessionTtlSeconds });
 }
 
 export function clearSessionCookie() { return serializeCookie(SESSION_COOKIE, "", { maxAge: 0 }); }
 
+/** Resolve (and delete) the id_token kept in KV for a session's logout hint (M-3). */
+export async function takeSessionIdToken(session, config) {
+  if (!session?.jti || !config.kv) return null;
+  const idToken = await kvGetFresh(config.kv, idTokenKey(session.jti));
+  await config.kv.delete(idTokenKey(session.jti)).catch(() => {});
+  return idToken;
+}
+
 export async function mintStateCookie(state, config) {
-  const token = await sign(JSON.stringify(state), config.sessionKey);
+  const token = await sign(JSON.stringify(state), await stateSigningKey(config));
   return serializeCookie(STATE_COOKIE, token, { maxAge: 600, sameSite: "Lax" });
 }
 
-export function readStateCookie(req, config) {
-  return readSignedCookie(req, STATE_COOKIE, config.sessionKey, isValidLoginState);
+export async function readStateCookie(req, config) {
+  return readSignedCookie(req, STATE_COOKIE, await stateSigningKey(config), isValidLoginState);
 }
 
 export function clearStateCookie() { return serializeCookie(STATE_COOKIE, "", { maxAge: 0 }); }

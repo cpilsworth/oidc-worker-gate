@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { SESSION_COOKIE, mintSessionCookie, readSession, clearSessionCookie,
-         mintStateCookie, readStateCookie, clearStateCookie } from "../src/session.js";
-import { sign } from "../src/cookies.js";
+         mintStateCookie, readStateCookie, clearStateCookie,
+         SESSION_KEY_LABEL, STATE_KEY_LABEL, idTokenKey } from "../src/session.js";
+import { sign, deriveCookieKey } from "../src/cookies.js";
 import { reqFor, getSetCookie } from "./helpers.js";
 
 const config = {
@@ -10,14 +11,31 @@ const config = {
   audienceMap: { "site-readers": ["site-readers"], admins: ["raw-admin"] },
 };
 
+// Sign test fixtures with the SAME per-purpose derived key the production code uses
+// (M-4), so "missing required field" assertions exercise field validation rather
+// than failing at the signature check.
 async function signedSessionCookie(body) {
-  const token = await sign(JSON.stringify(body), config.sessionKey);
+  const token = await sign(JSON.stringify(body), await deriveCookieKey(config.sessionKey, SESSION_KEY_LABEL));
   return `__Host-gate_session=${encodeURIComponent(token)}`;
 }
 
 async function signedLoginCookie(body) {
-  const token = await sign(JSON.stringify(body), config.sessionKey);
+  const token = await sign(JSON.stringify(body), await deriveCookieKey(config.sessionKey, STATE_KEY_LABEL));
   return `__Host-gate_login=${encodeURIComponent(token)}`;
+}
+
+/** Minimal in-memory KV matching the kvGetFresh/kvPutWithTtl wire shape. */
+function makeStubKv() {
+  const store = new Map();
+  return {
+    async get(key, type) {
+      const v = store.get(key);
+      if (v == null) return null;
+      return type === "json" ? JSON.parse(v) : v;
+    },
+    async put(key, val) { store.set(key, val); },
+    async delete(key) { store.delete(key); },
+  };
 }
 
 describe("session", () => {
@@ -125,6 +143,39 @@ describe("session", () => {
       .resolves.toBeNull();
     await expect(readStateCookie(reqFor("/.auth/callback", { cookie: await signedLoginCookie([]) }), config))
       .resolves.toBeNull();
+  });
+
+  it("M-3 keeps the id_token in KV (only an opaque jti in the cookie, no PII)", async () => {
+    const kv = makeStubKv();
+    const cfg = { ...config, kv };
+    const setCookie = await mintSessionCookie({ sub: "user-123", groups: ["site-readers"] }, cfg, "header.payload.signature");
+    const value = setCookie.match(/__Host-gate_session=([^;]*)/)[1];
+    const s = await readSession(reqFor("/members/x", { cookie: `__Host-gate_session=${value}` }), cfg);
+    expect(typeof s.jti).toBe("string");
+    expect(s.id_token).toBeUndefined();           // the raw token never enters the cookie
+    const stored = await kv.get(idTokenKey(s.jti), "json");
+    expect(stored.value).toBe("header.payload.signature"); // it lives server-side in KV instead
+  });
+
+  it("M-3 mints without a jti when no KV is bound (graceful, no id_token in cookie)", async () => {
+    const setCookie = await mintSessionCookie({ sub: "user-123", groups: [] }, config, "an-id-token");
+    const value = setCookie.match(/__Host-gate_session=([^;]*)/)[1];
+    const s = await readSession(reqFor("/m", { cookie: `__Host-gate_session=${value}` }), config);
+    expect(s.jti).toBeUndefined();
+    expect(s.id_token).toBeUndefined();
+  });
+
+  it("M-4 session and login-state cookies use independent keys (no cross-purpose validation)", async () => {
+    // A blob with a valid login-state shape, but signed with the SESSION key, must
+    // NOT validate when read as a login-state cookie — domain separation in action.
+    const stateShape = { state: "s", nonce: "n", verifier: "v", returnTo: "/" };
+    const crossSigned = await sign(JSON.stringify(stateShape), await deriveCookieKey(config.sessionKey, SESSION_KEY_LABEL));
+    const cookie = `__Host-gate_login=${encodeURIComponent(crossSigned)}`;
+    expect(await readStateCookie(reqFor("/.auth/callback", { cookie }), config)).toBeNull();
+
+    // And the genuine login-state key round-trips, proving the rejection is key-based.
+    const ok = `__Host-gate_login=${encodeURIComponent(await sign(JSON.stringify(stateShape), await deriveCookieKey(config.sessionKey, STATE_KEY_LABEL)))}`;
+    expect(await readStateCookie(reqFor("/.auth/callback", { cookie: ok }), config)).toMatchObject({ state: "s" });
   });
 
   it("state cookie round-trips and clears", async () => {

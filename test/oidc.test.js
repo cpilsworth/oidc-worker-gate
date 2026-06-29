@@ -163,11 +163,19 @@ describe("handleLogout (P6)", () => {
     expect(getSetCookie(res, SESSION_COOKIE)).toBeNull();
   });
 
-  it("H9 includes id_token_hint when the session carries the id_token", async () => {
+  it("H9 includes id_token_hint sourced from KV when the session carries a jti (M-3)", async () => {
     const setCookie = await mintSessionCookie({ sub: "user-123", groups: [] }, config, "the-id-token");
     const cookie = `${SESSION_COOKIE}=${setCookie.match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))[1]}`;
     const res = await oidc.handleLogout(reqFor("/.auth/logout", { method: "POST", cookie }), logoutUrl);
     const loc = new URL(res.headers.get("location"));
     expect(loc.searchParams.get("id_token_hint")).toBe("the-id-token");
+  });
+
+  it("M-3 logout still succeeds (no id_token_hint) when no session/KV entry is present", async () => {
+    const res = await oidc.handleLogout(reqFor("/.auth/logout", { method: "POST" }), logoutUrl);
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("location"));
+    expect(loc.searchParams.get("id_token_hint")).toBeNull();
+    expect(loc.searchParams.get("client_id")).toBe("test-client"); // logout still identifies the RP
   });
 });
