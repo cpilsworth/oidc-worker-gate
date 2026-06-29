@@ -152,6 +152,63 @@ describe("getDiscovery — H8 trust boundary", () => {
     await seedDiscovery(config.issuer, op.discovery, op.jwks);
     await expect(getDiscovery(config)).resolves.toMatchObject({ issuer: config.issuer });
   });
+
+  it("M-1 rejects a discovery doc whose token_endpoint is on a different host than the issuer", async () => {
+    // A poisoned cache pointing token_endpoint at an attacker host would exfiltrate
+    // client_secret + the auth code; pin every endpoint to the issuer's origin.
+    await seedDiscovery(config.issuer, { ...op.discovery, token_endpoint: "https://evil.test/token" }, op.jwks);
+    await expect(getDiscovery(config)).rejects.toThrow(/origin/);
+  });
+
+  it("M-1 rejects a discovery doc whose jwks_uri is on a different host than the issuer", async () => {
+    // jwks_uri → attacker host would let attacker-signed id_tokens verify.
+    await seedDiscovery(config.issuer, { ...op.discovery, jwks_uri: "https://evil.test/jwks" }, op.jwks);
+    await expect(getDiscovery(config)).rejects.toThrow(/origin/);
+  });
+
+  it("M-1 rejects a discovery doc whose authorization_endpoint is on a different host", async () => {
+    await seedDiscovery(config.issuer, { ...op.discovery, authorization_endpoint: "https://evil.test/authorize" }, op.jwks);
+    await expect(getDiscovery(config)).rejects.toThrow(/origin/);
+  });
+});
+
+describe("selectSigningJwk — use/alg hardening", () => {
+  it("kid-absent token picks the sig key even when the JWKS also serves an enc RSA key", async () => {
+    const sig = await makeRsaKey("sig-key");
+    const enc = await makeRsaKey("enc-key");
+    delete sig.publicJwk.kid; // kid-less keys: selection must fall back to use/alg, not count
+    delete enc.publicJwk.kid;
+    enc.publicJwk.use = "enc";
+    delete enc.publicJwk.alg;
+    op.jwks.keys = [enc.publicJwk, sig.publicJwk];
+    await seedDiscovery(config.issuer, op.discovery, op.jwks);
+
+    const now = Math.floor(Date.now() / 1000);
+    const token = await signJwt(
+      { alg: "RS256", typ: "JWT" }, // header omits kid
+      { iss: config.issuer, aud: "test-client", sub: "user-123", groups: ["site-readers"],
+        iat: now, exp: now + 3600, nonce: "n1" },
+      sig.privateKey,
+    );
+    const claims = await verifyIdToken(token, config, "n1");
+    expect(claims.sub).toBe("user-123");
+  });
+
+  it("rejects when the only RSA key is enc-only (no usable signing key)", async () => {
+    const enc = await makeRsaKey("enc-key");
+    delete enc.publicJwk.kid;
+    enc.publicJwk.use = "enc";
+    op.jwks.keys = [enc.publicJwk];
+    await seedDiscovery(config.issuer, op.discovery, op.jwks);
+
+    const now = Math.floor(Date.now() / 1000);
+    const token = await signJwt(
+      { alg: "RS256", typ: "JWT" },
+      { iss: config.issuer, aud: "test-client", sub: "x", iat: now, exp: now + 3600, nonce: "n1" },
+      enc.privateKey,
+    );
+    await expect(verifyIdToken(token, config, "n1")).rejects.toThrow(/no JWKS key/);
+  });
 });
 
 describe("verifyIdToken — kid-absent + iss guard", () => {

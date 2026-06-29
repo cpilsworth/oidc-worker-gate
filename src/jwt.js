@@ -21,11 +21,29 @@ function assertValidDiscovery(doc, issuer) {
   if (typeof doc.issuer !== "string" || doc.issuer.replace(/\/$/, "") !== issuer) {
     throw new Error("discovery issuer mismatch");
   }
+  // Endpoints must be https AND share the issuer's origin (M-1). The discovery
+  // doc is cached in KV; a poisoned entry pointing token_endpoint at an attacker
+  // host would exfiltrate client_secret + the auth code, and a poisoned jwks_uri
+  // would let attacker-signed id_tokens verify. Pinning to the issuer origin
+  // (host + scheme + port) closes both. Note: multi-host IdPs such as Google
+  // serve endpoints off a different origin and would need a code-level allowlist.
+  const issuerOrigin = originOf(issuer);
   for (const ep of ["authorization_endpoint", "token_endpoint", "jwks_uri"]) {
     if (!isHttpsUrl(doc[ep])) throw new Error(`discovery ${ep} must be an https URL`);
+    if (originOf(doc[ep]) !== issuerOrigin) throw new Error(`discovery ${ep} must share the issuer origin`);
   }
-  if (doc.end_session_endpoint !== undefined && !isHttpsUrl(doc.end_session_endpoint)) {
-    throw new Error("discovery end_session_endpoint must be an https URL");
+  if (doc.end_session_endpoint !== undefined) {
+    if (!isHttpsUrl(doc.end_session_endpoint)) throw new Error("discovery end_session_endpoint must be an https URL");
+    if (originOf(doc.end_session_endpoint) !== issuerOrigin) throw new Error("discovery end_session_endpoint must share the issuer origin");
+  }
+}
+
+/** URL origin (scheme://host:port), or null when the value isn't a parseable URL. */
+function originOf(value) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
   }
 }
 
@@ -111,15 +129,20 @@ async function importSigningKey(config, jwksUri, kid) {
 }
 
 /**
- * Pick the RSA verification key. When the token header carries a `kid`, match it
+ * Pick the RSA verification key. Consider only keys usable for RS256 signature
+ * verification: `kty:"RSA"`, not `use:"enc"`, and `alg` either absent or `RS256`
+ * — so a JWKS that also serves an encryption RSA key can't have it chosen on the
+ * kid-less single-key path. When the token header carries a `kid`, match it
  * exactly (a mismatch is a rotation → caller refetches once, then rejects). When
- * the header omits `kid`, the choice is only unambiguous if the JWKS has exactly
- * one RSA key — OIDC permits omitting `kid` then; multiple keys → reject.
+ * the header omits `kid`, the choice is only unambiguous if exactly one signing
+ * key remains — OIDC permits omitting `kid` then; multiple → reject.
  */
 function selectSigningJwk(jwks, kid) {
-  const rsa = (jwks.keys || []).filter((k) => k.kty === "RSA");
-  if (kid) return rsa.find((k) => k.kid === kid) || null;
-  return rsa.length === 1 ? rsa[0] : null;
+  const signing = (jwks.keys || []).filter(
+    (k) => k.kty === "RSA" && k.use !== "enc" && (k.alg === undefined || k.alg === "RS256"),
+  );
+  if (kid) return signing.find((k) => k.kid === kid) || null;
+  return signing.length === 1 ? signing[0] : null;
 }
 
 function audienceMatches(aud, clientId) {
