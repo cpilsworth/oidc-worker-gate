@@ -10,11 +10,11 @@ project itself knowing anything about OIDC.
 > **Status:** delivery gate, DA policy compiler, manual publish, and publisher-worker
 > refresh path are implemented and tested in the real `workerd` runtime. This is a research
 > / reference implementation (see [Limitations](#limitations)). DA policy design lives in
-> [`da-access-control-policy-spec.md`](./da-access-control-policy-spec.md), and operational
-> deployment steps live in [`operations.md`](./operations.md).
+> [`da-access-control-policy-spec.md`](./docs/da-access-control-policy-spec.md), and operational
+> deployment steps live in [`operations.md`](./docs/operations.md).
 > DA publish/change event wiring is intentionally deferred for now; use the manual
 > `npm run refresh-policy` command to refresh the signed KV policy after DA sheet changes.
-> Auth0 setup guide: [`auth0-setup.md`](./auth0-setup.md).
+> Auth0 setup guide: [`auth0-setup.md`](./docs/auth0-setup.md).
 
 ## What it does
 
@@ -43,7 +43,7 @@ project itself knowing anything about OIDC.
   push-invalidation headers, and a caching carve-out so per-user content can never be
   cross-served from the edge cache.
 - **Conformance-tested.** The OpenID Foundation RP behaviors are encoded as an executable
-  positive/negative matrix (P1–P7, N1–N17) — see [`conformance-testing.md`](./conformance-testing.md).
+  positive/negative matrix (P1–P7, N1–N17) — see [`conformance-testing.md`](./docs/conformance-testing.md).
 
 ## Outcome
 
@@ -408,7 +408,7 @@ npx wrangler secret put POLICY_HMAC_KEY --config wrangler.publisher.toml
 
 The `npm run refresh-policy`, `publish-policy`, and `policy-status` commands read these from
 a local `.env` (copied from `.env.example`, git-ignored). They are **not** worker config —
-see [`operations.md`](./operations.md) for the workflow.
+see [`operations.md`](./docs/operations.md) for the workflow.
 
 | Variable | Used by | Purpose |
 | --- | --- | --- |
@@ -488,12 +488,12 @@ session TTL expires.
 > claims from tokens, so roles must be injected under a namespaced key
 > (`https://oidc.workers.dev/groups`) via a Post Login Action — then set
 > `GROUPS_CLAIM = "https://oidc.workers.dev/groups"` so the worker reads exactly that claim.
-> See [`auth0-setup.md`](./auth0-setup.md) for the full setup including the required Action code.
+> See [`auth0-setup.md`](./docs/auth0-setup.md) for the full setup including the required Action code.
 
 > **Adobe IMS** works as the OP via the generic flow, but IMS does **not** emit a `groups`
 > claim in the `id_token` — entitlements require a post-login profile lookup and a
 > product-profile↔group mapping. That extension is deliberately out of the core gate; see
-> [`folder-authorization.md`](./folder-authorization.md).
+> [`folder-authorization.md`](./docs/folder-authorization.md).
 
 ## Local development
 
@@ -507,7 +507,7 @@ npm test                  # full conformance suite in workerd (vitest-pool-worke
 Point `OIDC_ISSUER` at a real IdP, or run the tests — they spin up an in-process mock
 OpenID Provider. Tests run in the real `workerd` runtime via
 `@cloudflare/vitest-pool-workers` (0.16.x / vitest 4), so Web Crypto, KV, and bindings
-behave as in production. See [`conformance-testing.md`](./conformance-testing.md) for the
+behave as in production. See [`conformance-testing.md`](./docs/conformance-testing.md) for the
 positive/negative matrix.
 
 ## EDS origin contract
@@ -579,13 +579,13 @@ caches origin responses by URL — so per-user content must not be edge-cached:
   `401`, a `WWW-Authenticate` challenge — no IdP/exception text is reflected to the caller.
 - **Open redirect:** post-login `returnTo` validated to same-origin (origin-equality check).
 - **Authorization:** policy-row `audience` intersected with session groups → `403` if empty.
-  Per-folder, DA-administered authorization is in [`folder-authorization.md`](./folder-authorization.md).
+  Per-folder, DA-administered authorization is in [`folder-authorization.md`](./docs/folder-authorization.md).
 - **Revocation:** time-based (cookie `exp`); shorten `SESSION_TTL` to tighten. The session
   already carries a `jti`, so a KV-backed `sub`/`jti` denylist is a natural extension. Rotating
   the HKDF label suffix (or `SESSION_HMAC_KEY`) invalidates every outstanding cookie at once.
 - **Rate limiting:** not enforced in-worker. Add a Cloudflare rate-limit rule on the login and
   callback routes (`/.auth/*`) — each callback performs KV writes — to blunt login/KV-write
-  floods. See [`operations.md`](./operations.md).
+  floods. See [`operations.md`](./docs/operations.md).
 
 ## Observability
 
@@ -614,7 +614,7 @@ in-process mock OpenID Provider. The negative cases fail closed — a token that
 check never yields a session. CI (`.github/workflows/oidc-worker-gate-ci.yml`) gates every
 change to `oidc-worker-gate/**`. The hosted OpenID Foundation RP suite is a
 release/certification gate, not a per-build requirement — see
-[`conformance-testing.md`](./conformance-testing.md).
+[`conformance-testing.md`](./docs/conformance-testing.md).
 
 ## Roadmap
 
@@ -629,14 +629,14 @@ refresh policy explicitly with `npm run refresh-policy` after publishing sheet c
 - `required`: require signed DA/KV policy for content paths; if no valid policy or
   last-known-good policy is available, return `503`.
 
-See the roadmap table and implementation record in [`phase-1-plan.md`](./phase-1-plan.md)
-and the identity/authz design in [`folder-authorization.md`](./folder-authorization.md).
+See the roadmap table and implementation record in [`phase-1-plan.md`](./docs/phase-1-plan.md)
+and the identity/authz design in [`folder-authorization.md`](./docs/folder-authorization.md).
 
 ## Limitations
 
 Research / reference implementation, not a hardened product. Only the `id_token` is
 validated (access/refresh tokens are not persisted — add refresh handling for long-lived
 sessions). Revocation is time-based. Single-use state replay protection is best-effort (CF
-KV is eventually consistent) — see [`state-replay-do.md`](./state-replay-do.md) for a
+KV is eventually consistent) — see [`state-replay-do.md`](./docs/state-replay-do.md) for a
 strict Durable Object design. The `x-auth-*` origin-trust boundary must be enforced
 operationally at the EDS origin.

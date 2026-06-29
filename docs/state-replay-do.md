@@ -5,7 +5,7 @@ path marks OAuth `state` as consumed in **Worker KV**; that is good enough for s
 replays but not strictly linearizable. This doc describes the problem, trade-offs, and a
 **Durable Object (DO)**-based consume-once design.
 
-Builds on [`README.md`](./README.md) (OIDC callback flow) and
+Builds on [`README.md`](../README.md) (OIDC callback flow) and
 [`conformance-testing.md`](./conformance-testing.md) (N9 in the negative matrix).
 
 ---
@@ -283,7 +283,7 @@ Implementation checklist:
 
 ## Relationship to other docs
 
-- [`README.md`](./README.md) — callback flow, security model, limitations.
+- [`README.md`](../README.md) — callback flow, security model, limitations.
 - [`conformance-testing.md`](./conformance-testing.md) — N9 negative case.
 - [`phase-1-plan.md`](./phase-1-plan.md) — implementation record; notes KV N9 is best-effort.
 - [`folder-authorization.md`](./folder-authorization.md) — unrelated (Phase 3 authz); same

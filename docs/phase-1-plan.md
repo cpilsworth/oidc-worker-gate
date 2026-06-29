@@ -7,7 +7,7 @@
 > unbound, error responses are generic JSON with a `request_id`, config invariants (≥32-byte HMAC
 > keys, positive-integer TTLs) and discovery validation are enforced, RP-initiated logout is
 > POST-only with `id_token_hint`, and the DA publisher rejects a site-wide `public /**`. For
-> current behavior see [`README.md`](./README.md) and [`conformance-testing.md`](./conformance-testing.md);
+> current behavior see [`README.md`](../README.md) and [`conformance-testing.md`](./conformance-testing.md);
 > this document is left unchanged as a record of what Phase 1 built.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -19,7 +19,7 @@
 **Tech Stack:** Cloudflare Workers + `wrangler`; `vitest` + `@cloudflare/vitest-pool-workers` (tests run in the real `workerd` runtime); Web Crypto (`crypto.subtle`) for RS256 verify + HMAC-SHA256; KV binding `OIDC_CACHE`. No runtime npm dependencies, no `nodejs_compat`.
 
 > **Status: Phase 1 implemented.** All tasks below are complete — 10 `src/*.js` modules + 11
-> vitest files, 59 tests green in `workerd`. See [`README.md`](./README.md) for what the
+> vitest files, 59 tests green in `workerd`. See [`README.md`](../README.md) for what the
 > gate does and how to deploy/configure it. This document is retained as the implementation
 > record and the template for executing Phases 2–3.
 
@@ -65,7 +65,7 @@ spec; this plan turns each row into an executable test. The final gate (Task 11)
 done until every P/N case is green.
 
 **Ground truth for ports:** the OIDC crypto is ported from
-[`../oidc-edge-gate/src/`](../oidc-edge-gate/src). It is already Web Crypto, so it moves
+[`../oidc-edge-gate/src/`](../../oidc-edge-gate/src). It is already Web Crypto, so it moves
 over almost unchanged. The **three Fastly→Cloudflare deltas** applied throughout:
 
 | Fastly (sibling) | Cloudflare (this worker) |

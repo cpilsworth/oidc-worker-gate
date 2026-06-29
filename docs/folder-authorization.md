@@ -6,8 +6,8 @@ delivered site are visible only to certain groups, and (b) only certain users/gr
 may *administer* those folder→group rules, with that administration itself scoped
 (a "marketing admin" manages marketing's access, not everyone's).
 
-This builds on [`README.md`](./README.md) (the worker's three-tier `ACCESS_POLICY`) and shares the philosophy of
-[`../signed-preview-deep-links/da-eds-auth-plan.md`](../signed-preview-deep-links/da-eds-auth-plan.md):
+This builds on [`README.md`](../README.md) (the worker's three-tier `ACCESS_POLICY`) and shares the philosophy of
+[`../signed-preview-deep-links/da-eds-auth-plan.md`](../../signed-preview-deep-links/da-eds-auth-plan.md):
 **DA is the source of truth; we don't stand up a parallel permission store.** The
 difference is *where* the decision happens — that plan delegates a low-volume *authoring*
 authz check by replaying the user's token to `admin.da.live`; here we need a
@@ -196,7 +196,7 @@ paths never consult the ACL, so they're unaffected regardless.
 
 > **These are decision gates, not background notes.** Treat each as a time-boxed
 > spike with an explicit decision criterion before the phase it blocks (see
-> [`README.md`](./README.md) Phasing): **Q3 + Q4 gate Phases 2–3; Q1 is moot under
+> [`README.md`](../README.md) Phasing): **Q3 + Q4 gate Phases 2–3; Q1 is moot under
 > the control-plane-push design.** None of them block Phase 1. `ask-fluffyjaws` is the
 > tool for Q1/Q3/Q4.
 
@@ -229,9 +229,9 @@ paths never consult the ACL, so they're unaffected regardless.
 
 ## Relationship to existing docs
 
-- [`README.md`](./README.md) — the worker; this doc replaces the static `ACCESS_POLICY`
+- [`README.md`](../README.md) — the worker; this doc replaces the static `ACCESS_POLICY`
   source with a path-scoped, DA-sourced policy and adds the identity-alignment decision.
-- [`../signed-preview-deep-links/da-eds-auth-plan.md`](../signed-preview-deep-links/da-eds-auth-plan.md)
+- [`../signed-preview-deep-links/da-eds-auth-plan.md`](../../signed-preview-deep-links/da-eds-auth-plan.md)
   — same "DA is the source of truth" stance; that plan replays a token to DA for a
   low-volume *authoring* decision, this one distributes a policy snapshot for a
   high-volume *delivery* gate.
