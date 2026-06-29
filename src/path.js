@@ -10,30 +10,45 @@
  *
  * Rules:
  *  - Reject encoded path separators (`%2F`, `%5C`) — never legitimate in an EDS
- *    path and the classic matcher-bypass vector.
+ *    path and the classic matcher-bypass vector. Checked on every decode pass.
+ *  - Percent-decode to a FIXPOINT (C-1). A single decode leaves a double-encoded
+ *    `%252e%252e` as the literal segment `%2e%2e`, which a glob treats as opaque
+ *    yet the WHATWG URL parser (which resolves `%2e`/`%2e%2e` as dot-segments)
+ *    collapses at the origin — so the gate would classify a different resource
+ *    than it forwards. Decoding until stable closes that gap.
  *  - Reject malformed percent-encoding and literal backslashes.
- *  - Percent-decode the remainder, collapse duplicate slashes, and resolve
- *    `.`/`..` segments (clamping `..` at the root).
+ *  - Collapse duplicate slashes and resolve `.`/`..` (clamping `..` at the root).
+ *  - Require the result to be a fixpoint of the URL parser, so the value we
+ *    classify is byte-identical to what `new Request(originUrl)` resolves to.
  *
  * @param {string} rawPathname  typically `new URL(request.url).pathname`
  * @returns {{ ok: true, path: string } | { ok: false, reason: string }}
  */
+const MAX_DECODE_PASSES = 5;
+
 export function normalizePath(rawPathname) {
   if (typeof rawPathname !== "string" || rawPathname.length === 0) {
     return { ok: false, reason: "empty path" };
   }
 
-  // Encoded separators would change segment structure once decoded; refuse them
-  // outright rather than try to reason about the decoded shape.
-  if (/%2f/i.test(rawPathname) || /%5c/i.test(rawPathname)) {
-    return { ok: false, reason: "encoded path separator" };
-  }
-
-  let decoded;
-  try {
-    decoded = decodeURIComponent(rawPathname);
-  } catch {
-    return { ok: false, reason: "malformed percent-encoding" };
+  let decoded = rawPathname;
+  for (let pass = 0; ; pass++) {
+    // Reject encoded separators on the STILL-ENCODED string, before decoding, so
+    // a `%2f`/`%5c` (at any encoding depth) can never decode into a real separator
+    // that silently changes segment structure.
+    if (/%2f/i.test(decoded) || /%5c/i.test(decoded)) {
+      return { ok: false, reason: "encoded path separator" };
+    }
+    if (!decoded.includes("%")) break; // fully decoded
+    if (pass >= MAX_DECODE_PASSES) return { ok: false, reason: "excessive percent-encoding" };
+    let next;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      return { ok: false, reason: "malformed percent-encoding" };
+    }
+    if (next === decoded) break; // stable
+    decoded = next;
   }
 
   // Many origins/browsers treat "\" as a separator; reject so the gate and
@@ -52,5 +67,17 @@ export function normalizePath(rawPathname) {
 
   let path = "/" + segments.join("/");
   if (hadTrailingSlash && path !== "/") path += "/";
+
+  // The canonical value must survive a URL-parser round-trip unchanged: that is
+  // exactly the transform `origin.js` applies via `new Request(originUrl)`. Any
+  // residual character the parser would re-encode/resolve (`#`, `?`, raw spaces,
+  // non-ASCII) is not a valid EDS content path — fail closed rather than diverge.
+  try {
+    if (new URL("https://x" + path).pathname !== path) {
+      return { ok: false, reason: "non-canonical path" };
+    }
+  } catch {
+    return { ok: false, reason: "non-canonical path" };
+  }
   return { ok: true, path };
 }

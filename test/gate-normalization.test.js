@@ -21,6 +21,14 @@ describe("gate path normalization (H1)", () => {
     expect(res.headers.get("location")).toContain("/authorize");
   });
 
+  it("DOUBLE-encoded dot-traversal under a public prefix is NOT served as public (C-1)", async () => {
+    // Raw `/blog/%252e%252e/members/secret` survives a single decode as the literal
+    // /blog/%2e%2e/... (public), but the origin resolves it to the protected /members/secret.
+    const res = await SELF.fetch("https://www.example.com/blog/%252e%252e/members/secret", { redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toContain("/authorize");
+  });
+
   it("rejects encoded path separators with 400", async () => {
     const res = await SELF.fetch("https://www.example.com/blog/..%2fmembers/secret");
     expect(res.status).toBe(400);

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { forwardToOrigin } from "../src/origin.js";
+import { normalizePath } from "../src/path.js";
 import { reqFor } from "./helpers.js";
 
 let seen; // capture what the worker sent to origin
@@ -70,6 +71,15 @@ describe("forwardToOrigin", () => {
     expect(seen.headers.get("x-auth-groups")).toBe("site-readers");
     expect(seen.headers.get("x-forwarded-host")).toBe("www.example.com");
     expect(seen.headers.get("x-push-invalidation")).toBe("enabled");
+  });
+
+  it("C-1: the canonical path the gate classified is exactly what reaches the origin", async () => {
+    // normalizePath resolves the double-encoded traversal to /members/secret; forwardToOrigin
+    // must send that same resource to origin — no re-divergence at the URL-parser boundary.
+    const canonical = normalizePath("/blog/%252e%252e/members/secret").path;
+    expect(canonical).toBe("/members/secret");
+    await forwardToOrigin(reqFor("/blog/%252e%252e/members/secret"), { sub: "x", groups: [] }, "protected", config, canonical);
+    expect(new URL(seen.url).pathname).toBe("/members/secret");
   });
 
   it("protected/secured responses are rewritten to private, no-store", async () => {
