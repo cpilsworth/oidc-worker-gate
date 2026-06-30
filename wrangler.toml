@@ -23,6 +23,7 @@ AUDIENCE_MAP      = '{"medical":["medical"],"secure":["secure"],"market-access":
 ACCESS_POLICY     = '''{
   "rules": [
     { "path": "/*",             "tier": "public" },
+    { "path": "/error/**",      "tier": "public" },
     { "path": "/blog/**",       "tier": "public" },
     { "path": "/scripts/**",    "tier": "public" },
     { "path": "/styles/**",     "tier": "public" },

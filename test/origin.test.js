@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { forwardToOrigin } from "../src/origin.js";
+import { forwardToOrigin, fetchErrorPage } from "../src/origin.js";
+import { errorPageResponse } from "../src/http.js";
 import { normalizePath } from "../src/path.js";
 import { reqFor } from "./helpers.js";
 
@@ -112,5 +113,59 @@ describe("forwardToOrigin", () => {
     expect(setCookies.join("\n")).not.toContain("__Host-gate_session=");
     expect(setCookies.join("\n")).not.toContain("__Host-gate_login=");
     expect(setCookies.join("\n")).toContain("eds_pref=ok");
+  });
+});
+
+describe("fetchErrorPage", () => {
+  it("requests a bare GET /error/{code} with no cookie and no query string", async () => {
+    globalThis.fetch = async (input, init) => {
+      const r = input instanceof Request ? input : new Request(input, init);
+      seen = { url: r.url, method: r.method, headers: r.headers };
+      return new Response("<h1>denied</h1>", { headers: { "content-type": "text/html" } });
+    };
+    const res = await fetchErrorPage(config, 403);
+    expect(res).not.toBeNull();
+    const url = new URL(seen.url);
+    expect(url.hostname).toBe("main--mysite--myorg.aem.live");
+    expect(url.pathname).toBe("/error/403");
+    expect(url.search).toBe(""); // no original path/query echoed back (H7)
+    expect(seen.method).toBe("GET");
+    expect(seen.headers.get("cookie")).toBeNull();
+  });
+
+  it("returns null when the origin lacks the page (non-2xx) so the caller falls back to JSON", async () => {
+    globalThis.fetch = async () => new Response("not found", { status: 404 });
+    expect(await fetchErrorPage(config, 403)).toBeNull();
+  });
+
+  it("returns null when the origin fetch throws", async () => {
+    globalThis.fetch = async () => { throw new Error("network down"); };
+    expect(await fetchErrorPage(config, 401)).toBeNull();
+  });
+});
+
+describe("errorPageResponse", () => {
+  it("forces the denial status onto the origin's 200 page and applies hardening headers", () => {
+    const page = new Response("<h1>denied</h1>", { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
+    const res = errorPageResponse(403, page);
+    expect(res.status).toBe(403); // never the origin's 200
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it("adds the WWW-Authenticate challenge on 401 and never copies origin Set-Cookie", () => {
+    const page = new Response("body", { status: 200, headers: { "set-cookie": "origin=1", "cache-control": "public, max-age=60" } });
+    const res = errorPageResponse(401, page, { wwwAuthenticate: 'Bearer error="invalid_token"' });
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toContain("Bearer");
+    expect(res.headers.get("cache-control")).toBe("private, no-store"); // not the origin's public cache
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("surfaces the request id as x-request-id so a bodyless page is still correlatable", () => {
+    const page = new Response("<h1>denied</h1>", { status: 200, headers: { "content-type": "text/html" } });
+    const res = errorPageResponse(403, page, { requestId: "ray-abc123" });
+    expect(res.headers.get("x-request-id")).toBe("ray-abc123");
   });
 });

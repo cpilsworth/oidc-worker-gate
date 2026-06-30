@@ -2,6 +2,38 @@ import { GATE_COOKIE_NAMES } from "./session.js";
 import { NO_STORE } from "./http.js";
 
 /**
+ * Fetch a static, non-personalized error page from the origin for a denial.
+ *
+ * The origin page (`/error/401`, `/error/403`) is an ordinary page that returns
+ * 200 — the *caller* is responsible for forcing the gate's denial status onto
+ * it (see http.js `errorPageResponse`), so a denial is never read as success.
+ *
+ * The request is deliberately bare: a plain GET with no cookie, no `x-auth-*`,
+ * and no query string or original path appended, so the error fetch echoes no
+ * user/IdP input back to the origin (H7). It is identical for every caller, so
+ * we edge-cache it — a flood of denials cannot amplify into one origin hit each.
+ *
+ * Returns the origin Response on success, or `null` on a network error or any
+ * non-2xx, so the caller can fall back to the generic JSON body.
+ * @param {import("./policy.js").Config} config
+ * @param {number} code  HTTP status whose page to fetch (e.g. 401, 403)
+ * @returns {Promise<Response|null>}
+ */
+export async function fetchErrorPage(config, code) {
+  const url = `https://${config.originHostname}/error/${code}`;
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { host: config.originHostname },
+      cf: { cacheEverything: true, cacheTtl: 300 },
+    });
+    return res.ok ? res : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Forward a request to the EDS origin per AEM BYO-CDN rules. For protected/secured
  * tiers, disable edge caching and rewrite the response so per-user content can never
  * be stored or cross-served. Public responses pass through with origin caching intact.

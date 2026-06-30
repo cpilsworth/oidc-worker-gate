@@ -78,7 +78,8 @@ e.g. a sheet `/config/access/site` with rows:
 | `/api/private/**` | `secured` | `staff` | API/data route |
 
 - `tier`: `public` (no auth), `protected` (missing session redirects to login), or
-  `secured` (missing session returns `401` JSON).
+  `secured` (missing session returns `401`, serving the origin `/error/401` page or generic
+  JSON if absent).
 - `audience`: optional. If absent on a non-public row, any valid session is enough. If
   present, `session.groups`/entitlements must intersect the row's audience or the worker
   returns `403`.

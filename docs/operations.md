@@ -167,7 +167,7 @@ Expected unauthenticated behavior:
 
 - public path: forwarded to the EDS origin
 - protected path: `302` to the identity provider
-- secured path: `401` JSON
+- secured path: `401` (origin `/error/401` page, or generic JSON if absent)
 
 ## Failure behavior
 

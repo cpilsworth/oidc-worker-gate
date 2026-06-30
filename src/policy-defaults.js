@@ -1,5 +1,6 @@
 export const DEFAULT_WORKER_MANAGED_PATHS = [
   "/.auth/**",
+  "/error/**",
   "/scripts/**",
   "/styles/**",
   "/blocks/**",

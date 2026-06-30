@@ -2,10 +2,10 @@ import { loadConfig } from "./config.js";
 import { OidcClient } from "./oidc.js";
 import { readSession } from "./session.js";
 import { classify, isAuthorized, matchesAny } from "./policy.js";
-import { forwardToOrigin } from "./origin.js";
+import { forwardToOrigin, fetchErrorPage } from "./origin.js";
 import { loadRuntimePolicy, PolicyUnavailableError } from "./policy-snapshot.js";
 import { normalizePath } from "./path.js";
-import { errorResponse, requestId } from "./http.js";
+import { errorResponse, errorPageResponse, requestId } from "./http.js";
 
 export default {
   /**
@@ -55,7 +55,7 @@ export default {
         policy_version: runtimePolicy.version,
         policy_source: runtimePolicy.source,
       });
-      return tier === "secured" ? unauthorized(request) : oidc.startLogin(request, url);
+      return tier === "secured" ? await unauthorized(request, config) : oidc.startLogin(request, url);
     }
     if (!isAuthorized(session, audience)) {
       console.info("authorization denied", {
@@ -66,7 +66,7 @@ export default {
         policy_version: runtimePolicy.version,
         policy_source: runtimePolicy.source,
       });
-      return forbidden(request);
+      return await forbidden(request, config);
     }
 
     return forwardToOrigin(request, session, tier, config, pathname);
@@ -84,15 +84,22 @@ function isWorkerManagedPath(pathname, config) {
   return matchesAny(config.workerManagedPaths, pathname);
 }
 
-function unauthorized(request) {
-  return errorResponse(401, "unauthorized", {
-    requestId: requestId(request),
-    wwwAuthenticate: 'Bearer error="invalid_token"',
-  });
+// Denials fetch a static origin page (/error/{code}); if that page is missing
+// or the fetch fails, we fall back to the generic JSON body (H7) so a denial is
+// always returned with the correct status either way.
+async function unauthorized(request, config) {
+  const id = requestId(request);
+  const wwwAuthenticate = 'Bearer error="invalid_token"';
+  const page = await fetchErrorPage(config, 401);
+  if (page) return errorPageResponse(401, page, { wwwAuthenticate, requestId: id });
+  return errorResponse(401, "unauthorized", { requestId: id, wwwAuthenticate });
 }
 
-function forbidden(request) {
-  return errorResponse(403, "forbidden", { requestId: requestId(request) });
+async function forbidden(request, config) {
+  const id = requestId(request);
+  const page = await fetchErrorPage(config, 403);
+  if (page) return errorPageResponse(403, page, { requestId: id });
+  return errorResponse(403, "forbidden", { requestId: id });
 }
 
 function policyUnavailable(request, path, err) {

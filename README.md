@@ -24,7 +24,7 @@ project itself knowing anything about OIDC.
   | --- | --- | --- |
   | **public** | `/`, `/blog/*`, `/scripts/*`, `/styles/*`, `/media_*` | Forward to origin, no auth, stays edge-cacheable |
   | **protected** | `/members/*`, `/account/*` | **302 → IdP** (interactive login) |
-  | **secured** | `/api/*`, `/secure-data/*` | **401 JSON**, no redirect (for `fetch`/XHR) |
+  | **secured** | `/api/*`, `/secure-data/*` | **401** (origin `/error/401` page, JSON fallback), no redirect (for `fetch`/XHR) |
 
 - **Standards-conformant OIDC relying party.** Authorization-code flow with **PKCE
   (S256)**, **RS256** `id_token` validation against the provider's JWKS, discovery-driven
@@ -73,8 +73,8 @@ management:
                   │                                            │
                   │ public                                     ├─▶ forward to EDS origin
                   │ protected + no session                     ├─▶ 302 to IdP
-                  │ secured + no session                       ├─▶ 401 JSON
-                  │ authenticated but wrong audience           └─▶ 403 JSON
+                  │ secured + no session                       ├─▶ 401 (origin /error/401 page, JSON fallback)
+                  │ authenticated but wrong audience           └─▶ 403 (origin /error/403 page, JSON fallback)
                   ▼
           OpenID Provider
           authorize · token · jwks · end_session
@@ -97,7 +97,8 @@ management:
 8. **protected / secured** → read and HMAC-verify the `__Host-gate_session` cookie **locally**.
    Valid + in-policy → forward to origin with `x-auth-*` identity headers.
 9. No/expired session → **protected** starts login (mints `state`/`nonce`/PKCE in a
-   short-lived signed cookie, 302s to the IdP); **secured** returns `401` JSON.
+   short-lived signed cookie, 302s to the IdP); **secured** returns `401` (origin
+   `/error/401` page, generic JSON fallback).
 10. The IdP redirects to `/.auth/callback`: the gate verifies `state`, exchanges `code`
     (with the PKCE verifier) for tokens, validates the `id_token` (RS256 vs JWKS, plus
     `iss`/`aud`/`azp`/`exp`/`iat`/`nonce` and `c_hash`/`at_hash` when present), mints the
@@ -108,10 +109,30 @@ management:
 
 **Tier behaviors.** `protected` is "trigger authentication" — for navigational HTML, a
 missing session yields an interactive **302** into the IdP. `secured` is "validate
-authentication" — for API/`fetch` endpoints, a missing/invalid session yields **`401`
-JSON** with no redirect (redirecting an XHR to an HTML login page is useless to the caller).
+authentication" — for API/`fetch` endpoints, a missing/invalid session yields a **`401`**
+with no redirect (redirecting an XHR to an HTML login page is useless to the caller).
 Once a session is present both tiers enforce the row's optional `audience`; authenticated
 but unauthorized → **`403`**.
+
+**Denial pages.** On a `401` or `403` the gate fetches a static page from the origin at
+`/error/{code}` (`/error/401`, `/error/403`) and returns its body under the gate's denial
+status — the origin serves that page as `200`, and the gate *forces* the `401`/`403` so a
+denial is never misread as success. The fetch is a bare `GET` with no cookie, no `x-auth-*`,
+and no original path or query appended (so it echoes nothing back to the origin, preserving
+the generic-error intent), and it is edge-cached (`cacheEverything`, 5 min) so a flood of
+denials can't amplify into one origin hit each. The client response is always `no-store`, so
+a browser can't cache a `403` past a later login. If the origin has no such page (non-2xx)
+or the fetch fails, the gate falls back to the generic JSON body below. `400`/`405`/`503`
+and callback failures are unaffected — they remain generic JSON.
+
+`/error/**` is whitelisted **public** in the worker policy and is one of the default
+worker-managed (reserved) paths. This does **not** affect whether denials serve the page —
+the gate's denial fetch goes straight to origin and bypasses policy regardless. What it buys
+you is twofold: a client navigating *directly* to `/error/401` gets the page instead of a
+login redirect, and the path is reserved so the publisher rejects any DA policy row that
+would gate `/error/**`. Treat `/error/` like any public prefix — don't park sensitive content
+under it. Any deployment shipping a custom `ACCESS_POLICY` must keep the `/error/** → public`
+rule (and `/error/**` in its worker-managed list) for the same guarantees.
 
 > The only difference between `protected` and `secured` is the *unauthenticated* response.
 > The 302-vs-401 choice can optionally be content-negotiated per request
@@ -209,7 +230,8 @@ npm run refresh-policy -- --pretty
 - A **public** path (e.g. `/`) returns the EDS page.
 - A **protected** path (e.g. `/members/x`) with no session **302**s to your IdP; after login
   you land back on the original path.
-- A **secured** path (e.g. `/api/...`) with no session returns **`401`** JSON, no redirect.
+- A **secured** path (e.g. `/api/...`) with no session returns **`401`** (the origin's
+  `/error/401` page, or generic JSON if absent), no redirect.
 
 > **Multiple environments.** Use wrangler `[env.*]` blocks for preview vs production. Set
 > `PUSH_INVALIDATION = "enabled"` **only** on the production worker (the one whose cache AEM
@@ -268,7 +290,7 @@ Example sheet rows:
 
 `protected` and `secured` both require authentication. The only difference is the
 unauthenticated response: `protected` redirects to login, while `secured` returns `401`
-JSON.
+(serving the origin's `/error/401` page, or generic JSON if absent).
 
 **Audience vocabulary.** Names in the `audience` column must be known audience names — the
 keys of the publisher's per-site `audience_map` (in `PUBLISHER_SITES`); an unknown name is a
@@ -445,6 +467,7 @@ One normalized rule shape is `{ path, tier (public|protected|secured), audience?
 ACCESS_POLICY = '''{
   "rules": [
     { "path": "/*",                  "tier": "public" },
+    { "path": "/error/**",           "tier": "public" },
     { "path": "/scripts/**",         "tier": "public" },
     { "path": "/styles/**",          "tier": "public" },
     { "path": "/blocks/**",          "tier": "public" },
@@ -465,7 +488,7 @@ ACCESS_POLICY = '''{
 > (`default_tier: protected`), enumerate the EDS namespace as `public`: `/scripts/**`,
 > `/styles/**`, `/blocks/**`, `/icons/**`, `/fonts/**`, hashed `/media_*`, only the
 > allowed `nav`/`footer` `.plain.html` fragments, plus `/sitemap.xml`, `/robots.txt`,
-> `/.well-known/**` (all included above).
+> `/.well-known/**` (all included above), plus the gate's own `/error/**` denial pages.
 > Verify the exact infra path set for your project against the EDS docs. `default_tier`
 > then applies only to content routes.
 
@@ -575,8 +598,11 @@ caches origin responses by URL — so per-user content must not be edge-cached:
 - **Logout:** RP-initiated logout is **POST-only** (a cross-site `GET` can't force a logout)
   and sends `id_token_hint` (resolved from KV via the session `jti`, then deleted) to the OP's
   `end_session_endpoint`; logout still succeeds with just `client_id` if the hint is absent.
-- **Error responses:** generic JSON bodies (`{ error, request_id }`) with `nosniff` and, on
-  `401`, a `WWW-Authenticate` challenge — no IdP/exception text is reflected to the caller.
+- **Error responses:** `401`/`403` serve the origin's static `/error/{code}` page (forced to
+  the denial status, `no-store`, `nosniff`, and a `WWW-Authenticate` challenge on `401`),
+  falling back to a generic JSON body (`{ error, request_id }`) when that page is absent.
+  Other errors are generic JSON. No IdP/exception text is reflected to the caller, and the
+  error fetch carries no cookie or original path/query.
 - **Open redirect:** post-login `returnTo` validated to same-origin (origin-equality check).
 - **Authorization:** policy-row `audience` intersected with session groups → `403` if empty.
   Per-folder, DA-administered authorization is in [`folder-authorization.md`](./docs/folder-authorization.md).
@@ -598,7 +624,9 @@ The gate owns its telemetry:
   JWKS refetch, KV read errors. The `400`-on-bad-callback is both a response and a counter.
 - **Sink:** **Workers Analytics Engine** and/or **Logpush**.
 - **Correlation:** `x-auth-request-id: <cf-ray>` is propagated to origin, and gate-generated
-  error responses carry a matching `request_id` in their JSON body for log lookup.
+  error responses carry a matching `request_id` for log lookup — in the JSON body for generic
+  responses, and as an `x-request-id` header on served `/error/{code}` pages (which have no
+  body to carry it).
 
 ## Performance
 

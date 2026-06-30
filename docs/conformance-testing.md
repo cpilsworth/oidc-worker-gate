@@ -75,8 +75,8 @@ The RP must reject every one of these (no session minted; surfaced as error, not
 | N11 | **`c_hash` / `at_hash` mismatch** (when `code`/`access_token` present) | reject |
 | N12 | OP returns **`error=` callback** (e.g. `access_denied`) | handled gracefully, no session, no 500 |
 | N13 | `returnTo` set to an **absolute/cross-origin URL** | sanitized to same-origin relative — no open redirect |
-| N14 | **`secured`** path, no/invalid session | **401 JSON**, no redirect; carries `WWW-Authenticate` + `X-Content-Type-Options: nosniff` |
-| N15 | Valid session but missing the matched row's required **audience** | **403** |
+| N14 | **`secured`** path, no/invalid session | **401**, no redirect; body is the origin `/error/401` page (forced to 401) or generic JSON if absent; carries `WWW-Authenticate`, `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store`, `x-request-id` |
+| N15 | Valid session but missing the matched row's required **audience** | **403** (origin `/error/403` page forced to 403, or generic JSON if absent) |
 | N16 | Logout via cross-site **`GET`** (CSRF) | **405**, session not cleared — only `POST` performs logout |
 | N17 | Path-matcher bypass: encoded traversal under a public prefix (`/blog/%2e%2e/members/secret`) or an encoded separator (`%2F`/`%5C`) | canonicalized before classify → treated as the real (protected) path, or **`400`** for encoded separators/malformed escapes — never served as public |
 

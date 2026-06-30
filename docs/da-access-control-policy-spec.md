@@ -75,9 +75,10 @@ Tier behavior remains the current worker behavior:
 
 - `public`: forward without authentication.
 - `protected`: unauthenticated request redirects to OIDC login.
-- `secured`: unauthenticated request returns JSON `401`.
-- Authenticated but unauthorized requests return generic JSON `403` for both
-  `protected` and `secured`.
+- `secured`: unauthenticated request returns `401`.
+- Authenticated but unauthorized requests return `403` for both `protected` and `secured`.
+- `401`/`403` serve the origin's static `/error/{code}` page (forced to the denial status),
+  falling back to a generic JSON body when that page is absent.
 
 ### `audience`
 
@@ -121,6 +122,7 @@ infrastructure paths.
 Reserved/operator-managed paths are configured by the operator and seeded with:
 
 - `/.auth/**`
+- `/error/**` (the gate's `401`/`403` denial pages; classified `public`)
 - `/scripts/**`
 - `/styles/**`
 - `/blocks/**`
@@ -269,13 +271,15 @@ The delivery worker logs:
 
 It does not log every successful authorization decision by default.
 
-Client-facing `403` responses remain generic:
+Client-facing `403` responses serve the origin's static `/error/403` page (forced to a
+`403` status) when present; otherwise they fall back to a generic body:
 
 ```json
 {"error":"forbidden"}
 ```
 
-Authorization details go to logs, not response bodies.
+Either way no authorization detail is reflected to the client — the `/error/{code}` page is
+static and echoes no user/IdP input, and authorization details go to logs, not response bodies.
 
 ## Implementation phases
 
