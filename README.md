@@ -631,9 +631,36 @@ The gate owns its telemetry:
 ## Performance
 
 The authenticated hot path is a single origin `fetch()` with local HMAC verification — no
-IdP round-trip per request. Discovery/JWKS are cached in KV and memoized in isolate memory
-so a warm isolate never round-trips to KV; on a transient JWKS failure the gate serves
-last-known-good keys within a staleness window rather than failing all logins.
+IdP round-trip per request. The signed policy snapshot is cached in KV **and** memoized in
+isolate memory, so a warm isolate classifies without any KV round-trip; steady-state
+authorization makes **zero KV reads**. Discovery/JWKS are cached in KV (read on the
+login/callback path only); on a transient JWKS failure the gate serves last-known-good keys
+within a staleness window rather than failing all logins.
+
+### Benchmark
+
+A one-time CPU-vs-wait benchmark drove the real `fetch` handler through a production-shaped
+traffic mix **inside workerd** (`@cloudflare/vitest-pool-workers` — the same V8 + BoringSSL
+crypto + miniflare KV as production), decomposing each request into on-CPU compute vs
+off-CPU I/O wait via a temporary tracer instrumenting the handler. workerd coarsens
+`performance.now()` to ~1 ms, so timings were amortised over batches (sub-µs mean precision)
+and I/O was reported as deterministic op counts scaled by modeled latencies (origin 35 ms,
+KV 8 ms). The tracer and harness were removed after the run to keep the handler simple; the
+full report and raw data remain in [`docs/perf/`](./docs/perf/).
+
+Measured highlights (warm isolate):
+
+- **Worker CPU ≈ 40 µs/request** — ~0.08 % of Cloudflare's 50 ms CPU limit; the worker is
+  not a scaling concern.
+- **Steady-state authorization = 0 KV reads + 1 origin fetch.** The origin subrequest
+  (~35 ms modeled) is the wall-time bottleneck; worker CPU is ~0.1 % of wall.
+- HMAC session verify ≈ 6 µs; RSA `id_token` verify ≈ 17 µs (login only).
+- Deny/reject paths (401/403/400) fail fast in **26–44 µs with no subrequest**.
+- Login callback is the only I/O-heavy path (~6 sequential KV ops + token exchange);
+  discovery/JWKS are read from KV per callback, so an isolate-level memo (as used for the
+  policy snapshot) is a noted optimization.
+
+Full breakdown, methodology and optimization guidance: [`docs/perf/README.md`](./docs/perf/README.md).
 
 ## Testing & conformance
 
