@@ -1,11 +1,11 @@
-import { defineConfig, configDefaults } from "vitest/config";
+import { defineConfig } from "vitest/config";
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 
+// Dedicated config for the performance benchmark (npm run bench). Mirrors the
+// main test config's worker bindings but includes ONLY test/perf, so the slow
+// high-iteration benchmark never runs as part of `npm test`.
 export default defineConfig({
-  // Stray git worktrees under .claude/ carry their own (stale) copy of this
-  // suite; never let them join the run — they execute against the main worker
-  // build and produce confusing cross-contaminated failures.
-  test: { exclude: [...configDefaults.exclude, "**/.claude/**", "**/.wrangler/**", "test/perf/**"] },
+  test: { include: ["test/perf/**/*.test.js"] },
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.toml" },
