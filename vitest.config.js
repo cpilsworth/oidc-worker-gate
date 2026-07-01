@@ -5,7 +5,7 @@ export default defineConfig({
   // Stray git worktrees under .claude/ carry their own (stale) copy of this
   // suite; never let them join the run — they execute against the main worker
   // build and produce confusing cross-contaminated failures.
-  test: { exclude: [...configDefaults.exclude, "**/.claude/**", "**/.wrangler/**", "test/perf/**"] },
+  test: { exclude: [...configDefaults.exclude, "**/.claude/**", "**/.wrangler/**"] },
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.toml" },

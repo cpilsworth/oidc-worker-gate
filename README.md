@@ -132,10 +132,8 @@ oidc-worker-gate/
 │   ├── session.js           # HMAC session cookies + audience mapping.
 │   ├── oidc.js / jwt.js     # OIDC RP flow and id_token validation.
 │   ├── origin.js            # EDS origin forwarding and cache carve-out.
-│   ├── config.js            # Cloudflare binding config loader.
-│   └── perf.js              # Opt-in request tracer (no-op in production; see Performance).
+│   └── config.js            # Cloudflare binding config loader.
 ├── test/            # vitest + in-process mock-OP harness (see conformance-testing.md)
-│   └── perf/        # performance benchmark (npm run bench) → docs/perf/
 ├── scripts/         # policy publish, refresh, and status inspection commands
 ├── wrangler.toml    # delivery worker config: route, vars, KV binding
 ├── wrangler.publisher.toml # policy publisher worker config
@@ -613,13 +611,14 @@ within a staleness window rather than failing all logins.
 
 ### Benchmark
 
-`npm run bench` drives the real `fetch` handler through a production-shaped traffic mix
-**inside workerd** (`@cloudflare/vitest-pool-workers` — the same V8 + BoringSSL crypto +
-miniflare KV as production), decomposing each request into on-CPU compute vs off-CPU I/O
-wait via an opt-in tracer ([`src/perf.js`](./src/perf.js), a no-op in production). workerd
-coarsens `performance.now()` to ~1 ms, so timings are amortised over batches (sub-µs mean
-precision) and I/O is reported as deterministic op counts scaled by modeled latencies
-(origin 35 ms, KV 8 ms). Harness: [`test/perf/`](./test/perf).
+A one-time CPU-vs-wait benchmark drove the real `fetch` handler through a production-shaped
+traffic mix **inside workerd** (`@cloudflare/vitest-pool-workers` — the same V8 + BoringSSL
+crypto + miniflare KV as production), decomposing each request into on-CPU compute vs
+off-CPU I/O wait via a temporary tracer instrumenting the handler. workerd coarsens
+`performance.now()` to ~1 ms, so timings were amortised over batches (sub-µs mean precision)
+and I/O was reported as deterministic op counts scaled by modeled latencies (origin 35 ms,
+KV 8 ms). The tracer and harness were removed after the run to keep the handler simple; the
+full report and raw data remain in [`docs/perf/`](./docs/perf/).
 
 Measured highlights (warm isolate):
 
@@ -643,9 +642,6 @@ check never yields a session. CI (`.github/workflows/oidc-worker-gate-ci.yml`) g
 change to `oidc-worker-gate/**`. The hosted OpenID Foundation RP suite is a
 release/certification gate, not a per-build requirement — see
 [`conformance-testing.md`](./docs/conformance-testing.md).
-
-`npm run bench` runs the performance benchmark (excluded from `npm test`); see
-[Performance → Benchmark](#benchmark) and [`docs/perf/README.md`](./docs/perf/README.md).
 
 ## Roadmap
 

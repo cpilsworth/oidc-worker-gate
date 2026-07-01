@@ -11,8 +11,7 @@
     "publish-policy": "node scripts/publish-policy.js",
     "refresh-policy": "node scripts/refresh-policy.js",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "bench": "vitest run --config vitest.bench.config.js"
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.16.0",
