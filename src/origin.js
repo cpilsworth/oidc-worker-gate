@@ -25,6 +25,9 @@ export async function fetchErrorPage(config, code) {
     const res = await fetch(url, {
       method: "GET",
       headers: { host: config.originHostname },
+      // Don't follow origin redirects: a redirecting /error page would be chased
+      // server-side (a non-2xx then falls through to the JSON body below).
+      redirect: "manual",
       cf: { cacheEverything: true, cacheTtl: 300 },
     });
     return res.ok ? res : null;
@@ -71,6 +74,11 @@ export async function forwardToOrigin(request, session, tier, config, pathname) 
     method: request.method,
     headers,
     body: request.body,
+    // Never follow origin redirects server-side: EDS can 3xx to another host
+    // (redirects sheet), and a followed redirect would re-send the x-auth-*
+    // identity headers cross-origin and hide the real redirect from the browser.
+    // Pass the 3xx straight through to the client instead.
+    redirect: "manual",
     ...(cacheOff ? { cf: { cacheTtl: 0, cacheEverything: false } } : {}),
   });
 

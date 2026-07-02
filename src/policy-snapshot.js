@@ -1,4 +1,5 @@
 import { base64UrlEncode, timingSafeEqual, utf8 } from "./encoding.js";
+import { isRecord } from "./util.js";
 
 const SCHEMA_VERSION = 1;
 const cache = new Map();
@@ -105,21 +106,13 @@ function logPolicyRefresh(payload) {
   for (const rule of ignored) console.warn("policy rule ignored", rule);
 }
 
-function logPolicyFallback(reason) {
-  console.info("policy fallback", { reason });
-}
-
 function logPolicyMode(config, mode) {
   const key = `${config.policySiteId || "none"}:${mode}`;
   if (loggedModes.has(key)) return;
   loggedModes.add(key);
-  logPolicyFallback(`POLICY_SOURCE=${config.policySource}; mode=${mode}`);
+  console.info("policy fallback", { reason: `POLICY_SOURCE=${config.policySource}; mode=${mode}` });
 }
 
 async function hmacKey(secret) {
   return crypto.subtle.importKey("raw", utf8(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-}
-
-function isRecord(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

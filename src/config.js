@@ -22,10 +22,10 @@ export function loadConfig(env) {
   if (!["auto", "worker", "required"].includes(policySource)) throw new Error(`Invalid POLICY_SOURCE: ${policySource}`);
   const policyHmacKey = optionalKey(env, "POLICY_HMAC_KEY");
   return {
-    issuer: trimSlash(env.OIDC_ISSUER),
-    clientId: env.CLIENT_ID,
+    issuer: trimSlash(required(env, "OIDC_ISSUER")),
+    clientId: required(env, "CLIENT_ID"),
     clientSecret,
-    redirectUri: env.REDIRECT_URI,
+    redirectUri: required(env, "REDIRECT_URI"),
     scopes: env.SCOPES || "openid profile email",
     // Single, explicit source for group/role membership (H4). No silent
     // `groups || roles` fallback — only this claim is read, so an unexpected
@@ -33,17 +33,17 @@ export function loadConfig(env) {
     groupsClaim: env.GROUPS_CLAIM || "groups",
     sessionTtlSeconds: positiveInt(env.SESSION_TTL, "SESSION_TTL", "3600"),
     sessionKey,
-    originHostname: env.ORIGIN_HOSTNAME,
-    forwardedHost: env.FORWARDED_HOST,
+    originHostname: required(env, "ORIGIN_HOSTNAME"),
+    forwardedHost: required(env, "FORWARDED_HOST"),
     pushInvalidation: env.PUSH_INVALIDATION === "enabled",
-    routes: JSON.parse(env.ROUTES || '{"callback":"/.auth/callback","logout":"/.auth/logout"}'),
+    routes: parseJsonMemo(env.ROUTES || '{"callback":"/.auth/callback","logout":"/.auth/logout"}'),
     policy: parseJsonMemo(env.ACCESS_POLICY || '{"rules":[],"default_tier":"protected"}'),
     policySource,
     policySiteId: env.POLICY_SITE_ID || "",
     policyHmacKey,
     policyRefreshTtlSeconds: positiveInt(env.POLICY_REFRESH_TTL_SECONDS, "POLICY_REFRESH_TTL_SECONDS", "60"),
     policyStaleTtlSeconds: positiveInt(env.POLICY_STALE_TTL_SECONDS, "POLICY_STALE_TTL_SECONDS", "900"),
-    audienceMap: JSON.parse(env.AUDIENCE_MAP || "{}"),
+    audienceMap: parseJsonMemo(env.AUDIENCE_MAP || "{}"),
     workerManagedPaths: parseJsonMemo(env.WORKER_MANAGED_PATHS || JSON.stringify(DEFAULT_WORKER_MANAGED_PATHS)),
     kv: env.OIDC_CACHE || null,
   };

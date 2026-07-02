@@ -102,9 +102,11 @@ management:
 10. The IdP redirects to `/.auth/callback`: the gate verifies `state`, exchanges `code`
     (with the PKCE verifier) for tokens, validates the `id_token` (RS256 vs JWKS, plus
     `iss`/`aud`/`azp`/`exp`/`iat`/`nonce` and `c_hash`/`at_hash` when present), mints the
-    session, and bounces the user back to where they started. **Any validation failure
-    returns a generic `400`** (not a re-redirect into login), so a rejection is observable.
-    The error body is a generic JSON code plus a `request_id` — it never echoes the IdP
+    session, and bounces the user back to where they started. A validation failure returns a
+    generic error (not a re-redirect into login), so a rejection is observable: `id_token`/state
+    validation failures are `400`, while IdP-reported errors and a failed token exchange are
+    `401`. Every callback failure also clears the login-state cookie so a retry starts a clean
+    login. The error body is a generic JSON code plus a `request_id` — it never echoes the IdP
     `error` parameter or an exception message.
 
 **Tier behaviors.** `protected` is "trigger authentication" — for navigational HTML, a
@@ -634,8 +636,10 @@ The authenticated hot path is a single origin `fetch()` with local HMAC verifica
 IdP round-trip per request. The signed policy snapshot is cached in KV **and** memoized in
 isolate memory, so a warm isolate classifies without any KV round-trip; steady-state
 authorization makes **zero KV reads**. Discovery/JWKS are cached in KV (read on the
-login/callback path only); on a transient JWKS failure the gate serves last-known-good keys
-within a staleness window rather than failing all logins.
+login/callback path only) with a TTL, and JWKS is refetched once on a `kid` miss for key
+rotation; outbound IdP metadata fetches are bounded by a request timeout. (Unlike the policy
+snapshot, discovery/JWKS have no last-known-good stale-serve window — once the cache entry
+expires, a failed fetch fails that login.)
 
 ### Benchmark
 
@@ -695,3 +699,27 @@ sessions). Revocation is time-based. Single-use state replay protection is best-
 KV is eventually consistent) — see [`state-replay-do.md`](./docs/state-replay-do.md) for a
 strict Durable Object design. The `x-auth-*` origin-trust boundary must be enforced
 operationally at the EDS origin.
+
+Further considerations if this moves toward production:
+
+- **No policy rollback protection.** `verifyPolicyEnvelope` checks the signature, `site_id`
+  and `schema_version` but not freshness, so any *previously* signed policy envelope verifies
+  forever. Anyone with KV write access (e.g. a leaked `CLOUDFLARE_API_TOKEN` scoped to the
+  namespace) could reinstall an older, more permissive policy without knowing
+  `POLICY_HMAC_KEY`. Mitigate with version monotonicity or a `published_at` max-age check.
+- **`POLICY_SOURCE=auto` is a silent enforcement downgrade path.** If the KV snapshot is
+  deleted/corrupted and the stale window lapses, `auto` falls back to the static
+  `ACCESS_POLICY`, which may be materially more permissive than the DA policy. Use
+  `POLICY_SOURCE=required` in production so content paths fail closed (`503`) instead.
+- **`/* public` weakens deny-by-default for top-level paths.** A `{ "path": "/*", "tier":
+  "public" }` rule in `ACCESS_POLICY` makes every *single-segment* path public, so
+  `default_tier: protected` only applies to multi-segment paths (e.g. `/api` is public while
+  `/api/x` is secured). Prefer enumerating top-level public pages explicitly.
+- **Publisher trigger authority = DA read access.** Any token that can read the DA
+  `access-control` document can trigger a (re)publish, and every request costs one outbound
+  DA fetch; put a Cloudflare rate-limit rule in front of the publisher. Versioned audit copies
+  (`policy:version:<site>:<version>`) are written without a TTL and accumulate one key per
+  publish — prune them out of band if that matters.
+- **Literal `%` in a path is rejected.** Path canonicalization percent-decodes to a fixpoint,
+  so a legitimate slug containing a literal `%` (e.g. `/50%25off`) is rejected as malformed
+  rather than served. Avoid literal percent signs in EDS content paths behind the gate.

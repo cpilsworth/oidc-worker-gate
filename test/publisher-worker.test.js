@@ -85,7 +85,14 @@ describe("publisher worker", () => {
   it("does not grant credentialed CORS to unknown origins", async () => {
     const res = await handlePublisherRequest(options({ origin: "https://example.com" }), env());
     expect(res.status).toBe(204);
-    expect(res.headers.get("access-control-allow-origin")).toBe("null");
+    // Header omitted entirely for disallowed origins — never the literal "null".
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("does not treat a sandboxed 'null' origin as allowed", async () => {
+    const res = await handlePublisherRequest(options({ origin: "null" }), env());
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
   });
 
   it("publishes an allow-listed site from DA source", async () => {
@@ -104,9 +111,9 @@ describe("publisher worker", () => {
       rules: 1,
     });
 
-    expect(fetch).toHaveBeenCalledWith("https://da.test/cpilsworth/authz/", {
+    expect(fetch).toHaveBeenCalledWith("https://da.test/cpilsworth/authz/", expect.objectContaining({
       headers: { authorization: "Bearer da-token", accept: "application/json" },
-    });
+    }));
     const envelope = JSON.parse(await e.OIDC_CACHE.get(policyCacheKey(siteId)));
     await expect(verifyPolicyEnvelope(envelope, { policySiteId: siteId, policyHmacKey }))
       .resolves.toEqual(envelope.payload);
@@ -175,6 +182,6 @@ describe("publisher worker", () => {
   it("allows only POST", async () => {
     const res = await handlePublisherRequest(new Request("https://publisher.example.com/"), env());
     expect(res.status).toBe(405);
-    expect(res.headers.get("access-control-allow-origin")).toBe("null");
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
   });
 });

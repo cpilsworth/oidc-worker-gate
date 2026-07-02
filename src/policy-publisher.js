@@ -1,5 +1,6 @@
 import { matchGlob, specificity } from "./policy.js";
 import { policyCacheKey, signPolicyPayload } from "./policy-snapshot.js";
+import { isRecord } from "./util.js";
 
 const KNOWN_COLUMNS = new Set(["path", "tier", "audience", "description"]);
 const TIERS = new Set(["public", "protected", "secured"]);
@@ -157,7 +158,7 @@ export function policyVersionKey(siteId, version) {
   return `policy:version:${siteId}:${version}`;
 }
 
-function buildStatus(result, options) {
+export function buildStatus(result, options) {
   const now = (options.now || new Date()).toISOString();
   if (result.errors.length > 0) {
     return {
@@ -230,8 +231,4 @@ function splitSiteId(siteId) {
   const parts = String(siteId || "").split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) throw new Error("site ID must use org/site format");
   return parts;
-}
-
-function isRecord(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
