@@ -8,6 +8,10 @@ id = "d4bec63e176f41b0902126d281e9be2e"
 
 [vars]
 DA_BASE_URL = "https://admin.da.live/config"
+# Optional CORS allow-list override (JSON array of RegExp source strings). When
+# unset, the publisher falls back to its built-in default list. Move deployment-
+# specific origins here instead of hardcoding them in source.
+# CORS_ALLOWED_ORIGINS = '["^https://([a-z0-9-]+--)?authz--cpilsworth\\.aem\\.(live|page)$", "^https://da\\.live$"]'
 PUBLISHER_SITES = '''{
   "cpilsworth/authz": {
     "audience_map": {

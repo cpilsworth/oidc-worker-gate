@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import process from "node:process";
 import {
   buildSignedPolicyEnvelope,
+  buildStatus,
   daAccessControlUrl,
   policyStatusKey,
   policyVersionKey,
@@ -41,7 +42,7 @@ async function main() {
     workerManagedPaths,
     sourceVersion: args["source-version"],
   });
-  const status = buildStatus(siteId, result, args["source-version"]);
+  const status = buildStatus(result, { siteId, sourceVersion: args["source-version"] });
 
   for (const warning of result.warnings) {
     console.warn(JSON.stringify({ level: "warn", site_id: siteId, ...warning }));
@@ -110,30 +111,6 @@ async function maybeWriteStatus(args, siteId, status) {
   } catch (err) {
     console.error(JSON.stringify({ level: "error", message: "failed to write policy status", reason: err.message }));
   }
-}
-
-function buildStatus(siteId, result, sourceVersion) {
-  const now = new Date().toISOString();
-  if (result.errors.length > 0) {
-    return {
-      site_id: siteId,
-      updated_at: now,
-      source_version: sourceVersion || null,
-      last_success: null,
-      last_failure: now,
-      errors: result.errors,
-      warnings: result.warnings,
-    };
-  }
-  return {
-    site_id: siteId,
-    updated_at: now,
-    source_version: result.payload.version,
-    last_success: now,
-    last_failure: null,
-    errors: [],
-    warnings: result.warnings,
-  };
 }
 
 async function readJsonArg(value) {

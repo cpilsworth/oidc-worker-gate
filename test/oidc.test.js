@@ -78,6 +78,11 @@ describe("handleCallback", () => {
     const { res } = await startThenCallback({ dropCode: true });
     expect(res.status).toBe(400);
   });
+  it("a failed callback burns the login-state cookie so a retry starts clean", async () => {
+    const { res } = await startThenCallback({ tamperState: true });
+    expect(res.status).toBe(400);
+    expect(getSetCookie(res, "__Host-gate_login")).toBe("");
+  });
   it("N10 wrong PKCE verifier → OP rejects, RP surfaces 401, no session", async () => {
     const { res } = await startThenCallback({ wrongPkce: true });
     expect(res.status).toBe(401);
@@ -161,6 +166,26 @@ describe("handleLogout (P6)", () => {
     const res = await oidc.handleLogout(reqFor("/.auth/logout"), logoutUrl);
     expect(res.status).toBe(405);
     expect(getSetCookie(res, SESSION_COOKIE)).toBeNull();
+  });
+
+  it("H9 rejects a cross-site POST logout (Sec-Fetch-Site) with 403 and no cookie clear", async () => {
+    const res = await oidc.handleLogout(
+      reqFor("/.auth/logout", { method: "POST", headers: { "sec-fetch-site": "cross-site" } }), logoutUrl);
+    expect(res.status).toBe(403);
+    expect(getSetCookie(res, SESSION_COOKIE)).toBeNull();
+  });
+
+  it("H9 rejects a cross-origin POST logout (Origin mismatch) with 403", async () => {
+    const res = await oidc.handleLogout(
+      reqFor("/.auth/logout", { method: "POST", headers: { origin: "https://evil.example" } }), logoutUrl);
+    expect(res.status).toBe(403);
+  });
+
+  it("H9 allows a same-origin POST logout", async () => {
+    const res = await oidc.handleLogout(
+      reqFor("/.auth/logout", { method: "POST", headers: { origin: "https://www.example.com" } }), logoutUrl);
+    expect(res.status).toBe(302);
+    expect(getSetCookie(res, SESSION_COOKIE)).toBe("");
   });
 
   it("H9 includes id_token_hint sourced from KV when the session carries a jti (M-3)", async () => {

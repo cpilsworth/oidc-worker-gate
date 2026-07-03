@@ -1,5 +1,6 @@
 import { parseCookies, serializeCookie, sign, unsign, deriveCookieKey } from "./cookies.js";
 import { kvGetFresh, kvPutWithTtl } from "./kv.js";
+import { isRecord } from "./util.js";
 
 // `__Host-` prefix (H3): the browser only accepts these when Secure, Path=/ and
 // Domain-less, which blocks a sibling/non-secure subdomain from overwriting them.
@@ -20,10 +21,6 @@ const stateSigningKey = (config) => deriveCookieKey(config.sessionKey, STATE_KEY
 
 /** KV key under which the id_token for a session is stored (M-3). */
 export const idTokenKey = (jti) => `idtoken:${jti}`;
-
-function isRecord(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function isValidSession(session) {
   if (!isRecord(session)) return false;

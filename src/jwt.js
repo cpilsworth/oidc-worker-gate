@@ -2,10 +2,14 @@ import { base64UrlDecode, decodeJsonSegment, base64UrlEncode, utf8, timingSafeEq
 import { kvGetFresh, kvPutWithTtl } from "./kv.js";
 
 const CACHE_TTL_SECONDS = 3600;
+// Cap outbound IdP metadata fetches so a hung provider can't pin the login path
+// open until the platform's wall-clock limit.
+const FETCH_TIMEOUT_MS = 5000;
 
 export async function getDiscovery(config) {
   const doc = await cachedJson(config.kv, `discovery:${config.issuer}`, async () => {
-    const res = await fetch(`${config.issuer}/.well-known/openid-configuration`);
+    const res = await fetch(`${config.issuer}/.well-known/openid-configuration`,
+      { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`discovery fetch failed: ${res.status}`);
     return res.json();
   });
@@ -58,7 +62,7 @@ function isHttpsUrl(value) {
 
 async function getJwks(config, jwksUri, { force = false } = {}) {
   return cachedJson(config.kv, `jwks:${jwksUri}`, async () => {
-    const res = await fetch(jwksUri);
+    const res = await fetch(jwksUri, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`jwks fetch failed: ${res.status}`);
     return res.json();
   }, { force });
@@ -101,7 +105,7 @@ export async function verifyIdToken(idToken, config, expectedNonce, hashes = {})
   if (typeof claims.exp !== "number" || claims.exp + skew < now) throw new Error("token expired"); // N5
   if (typeof claims.nbf === "number" && claims.nbf - skew > now) throw new Error("token not yet valid");
   if (typeof claims.iat !== "number") throw new Error("iat required");
-  if (typeof claims.iat === "number" && claims.iat - skew > now) throw new Error("token iat in the future");
+  if (claims.iat - skew > now) throw new Error("token iat in the future");
   if (expectedNonce && claims.nonce !== expectedNonce) throw new Error("nonce mismatch"); // N6
 
   // --- c_hash / at_hash when the corresponding artifact is present (N11) ---

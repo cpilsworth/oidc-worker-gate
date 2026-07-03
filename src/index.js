@@ -13,65 +13,87 @@ export default {
    * @param {Record<string, any>} env
    */
   async fetch(request, env) {
-    const url = new URL(request.url);
-    const config = loadConfig(env);
-    const oidc = new OidcClient(config);
-
-    // Gate-owned routes first (exact match on the raw path).
-    if (url.pathname === config.routes.callback) return oidc.handleCallback(request, url);
-    if (url.pathname === config.routes.logout) return oidc.handleLogout(request, url);
-
-    // Canonicalize before classifying so encoded/relative/duplicate-separator
-    // variants cannot be matched differently from what the origin serves (H1).
-    const normalized = normalizePath(url.pathname);
-    if (!normalized.ok) {
-      console.info("authorization denied", {
-        status: 400, reason: "bad_path", detail: normalized.reason, path: url.pathname,
-      });
-      return errorResponse(400, "bad_request", { requestId: requestId(request) });
-    }
-    const pathname = normalized.path;
-
-    let runtimePolicy;
     try {
-      runtimePolicy = await policyForPath(pathname, config);
+      return await handleRequest(request, env);
     } catch (err) {
-      if (err instanceof PolicyUnavailableError) return policyUnavailable(request, pathname, err);
-      throw err;
+      // Last-resort guard: any unhandled throw (bad config, KV outage, origin
+      // fetch error) must still return the gate's generic JSON error rather than
+      // the platform's raw 1101 page, which would leak a stack trace and bypass
+      // the no-store/nosniff discipline every other response goes through.
+      console.error("unhandled gate error", { reason: err && err.message, path: safePath(request) });
+      return errorResponse(500, "internal_error", { requestId: requestId(request) });
     }
-    const { tier, audience } = classify(pathname, runtimePolicy.policy);
-
-    // public: forward before touching the cookie.
-    if (tier === "public") return forwardToOrigin(request, null, "public", config, pathname);
-
-    // protected / secured: validate the local session.
-    const session = await readSession(request, config);
-    if (!session) {
-      console.info("authorization denied", {
-        status: tier === "secured" ? 401 : 302,
-        reason: "missing_session",
-        path: pathname,
-        tier,
-        policy_version: runtimePolicy.version,
-        policy_source: runtimePolicy.source,
-      });
-      return tier === "secured" ? await unauthorized(request, config) : oidc.startLogin(request, url);
-    }
-    if (!isAuthorized(session, audience)) {
-      console.info("authorization denied", {
-        status: 403,
-        reason: "audience_mismatch",
-        path: pathname,
-        tier,
-        policy_version: runtimePolicy.version,
-        policy_source: runtimePolicy.source,
-      });
-      return await forbidden(request, config);
-    }
-
-    return forwardToOrigin(request, session, tier, config, pathname);
   },
 };
+
+async function handleRequest(request, env) {
+  const url = new URL(request.url);
+  const config = loadConfig(env);
+  const oidc = new OidcClient(config);
+
+  // Gate-owned routes first (exact match on the raw path).
+  if (url.pathname === config.routes.callback) return oidc.handleCallback(request, url);
+  if (url.pathname === config.routes.logout) return oidc.handleLogout(request, url);
+
+  // Canonicalize before classifying so encoded/relative/duplicate-separator
+  // variants cannot be matched differently from what the origin serves (H1).
+  const normalized = normalizePath(url.pathname);
+  if (!normalized.ok) {
+    console.info("authorization denied", {
+      status: 400, reason: "bad_path", detail: normalized.reason, path: url.pathname,
+    });
+    return errorResponse(400, "bad_request", { requestId: requestId(request) });
+  }
+  const pathname = normalized.path;
+
+  let runtimePolicy;
+  try {
+    runtimePolicy = await policyForPath(pathname, config);
+  } catch (err) {
+    if (err instanceof PolicyUnavailableError) return policyUnavailable(request, pathname, err);
+    throw err;
+  }
+  const { tier, audience } = classify(pathname, runtimePolicy.policy);
+
+  // public: forward before touching the cookie.
+  if (tier === "public") return forwardToOrigin(request, null, "public", config, pathname);
+
+  // protected / secured: validate the local session.
+  const session = await readSession(request, config);
+  if (!session) {
+    console.info("authorization denied", {
+      status: tier === "secured" ? 401 : 302,
+      reason: "missing_session",
+      path: pathname,
+      tier,
+      policy_version: runtimePolicy.version,
+      policy_source: runtimePolicy.source,
+    });
+    return tier === "secured" ? await unauthorized(request, config) : oidc.startLogin(request, url);
+  }
+  if (!isAuthorized(session, audience)) {
+    console.info("authorization denied", {
+      status: 403,
+      reason: "audience_mismatch",
+      path: pathname,
+      tier,
+      policy_version: runtimePolicy.version,
+      policy_source: runtimePolicy.source,
+    });
+    return await forbidden(request, config);
+  }
+
+  return forwardToOrigin(request, session, tier, config, pathname);
+}
+
+/** Best-effort path for error logs without throwing on a malformed URL. */
+function safePath(request) {
+  try {
+    return new URL(request.url).pathname;
+  } catch {
+    return null;
+  }
+}
 
 async function policyForPath(pathname, config) {
   if (isWorkerManagedPath(pathname, config)) {

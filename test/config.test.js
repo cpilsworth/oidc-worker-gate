@@ -43,6 +43,11 @@ describe("loadConfig", () => {
   it("throws if a required secret is missing", () => {
     expect(() => loadConfig({ ...env, SESSION_HMAC_KEY: undefined })).toThrow(/SESSION_HMAC_KEY/);
   });
+  it("throws if a required var is missing", () => {
+    for (const key of ["OIDC_ISSUER", "CLIENT_ID", "REDIRECT_URI", "ORIGIN_HOSTNAME", "FORWARDED_HOST"]) {
+      expect(() => loadConfig({ ...env, [key]: undefined }), key).toThrow(new RegExp(key));
+    }
+  });
   it("allows required policy source mode", () => {
     expect(loadConfig({ ...env, POLICY_SOURCE: "required" }).policySource).toBe("required");
   });

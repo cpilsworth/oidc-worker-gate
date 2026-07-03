@@ -9,6 +9,9 @@ import { errorResponse, requestId } from "./http.js";
 import { kvGetFresh, kvPutWithTtl } from "./kv.js";
 
 const STATE_TTL_SECONDS = 600;
+// Cap the outbound IdP token exchange so a hung provider can't pin the request
+// open until the platform's wall-clock limit.
+const TOKEN_EXCHANGE_TIMEOUT_MS = 5000;
 
 export class OidcClient {
   constructor(config) { this.config = config; }
@@ -62,9 +65,17 @@ export class OidcClient {
       grant_type: "authorization_code", code, redirect_uri: this.config.redirectUri,
       client_id: this.config.clientId, client_secret: this.config.clientSecret, code_verifier: saved.verifier,
     });
-    const tokenRes = await fetch(discovery.token_endpoint, {
-      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: body.toString(),
-    });
+    let tokenRes;
+    try {
+      tokenRes = await fetch(discovery.token_endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+        signal: AbortSignal.timeout(TOKEN_EXCHANGE_TIMEOUT_MS),
+      });
+    } catch (e) {
+      return fail(req, 401, "login_failed", `token_exchange_error:${e.name}`);
+    }
     if (!tokenRes.ok) return fail(req, 401, "login_failed", `token_exchange_${tokenRes.status}`);
 
     const tokens = await tokenRes.json();
@@ -90,6 +101,14 @@ export class OidcClient {
     // cannot force a logout (CSRF — H9).
     if (req.method !== "POST") {
       return errorResponse(405, "method_not_allowed", { requestId: requestId(req) });
+    }
+    // POST alone isn't enough: a cross-site auto-submitting form still POSTs and
+    // the browser applies our Set-Cookie clears on the resulting navigation. Also
+    // require same-origin intent (H9). A cross-site browser POST always carries an
+    // Origin (and Sec-Fetch-Site) header, so rejecting positive cross-origin
+    // evidence blocks the CSRF vector without breaking non-browser clients.
+    if (!isSameOriginRequest(req, url)) {
+      return errorResponse(403, "forbidden", { requestId: requestId(req) });
     }
 
     const session = await readSession(req, this.config);
@@ -123,11 +142,28 @@ function safeReturnTo(returnTo, origin) {
   }
 }
 
+/**
+ * Same-origin check for state-changing gate routes (logout). Trusts
+ * `Sec-Fetch-Site` when present; otherwise falls back to comparing `Origin`
+ * against the gate origin. Absent both (non-browser client), allow.
+ */
+function isSameOriginRequest(req, url) {
+  const fetchSite = req.headers.get("sec-fetch-site");
+  if (fetchSite) return fetchSite === "same-origin";
+  const origin = req.headers.get("origin");
+  if (origin) return origin === url.origin;
+  return true;
+}
+
 /** Log the real reason server-side, return a generic body to the caller (H7). */
 function fail(req, status, code, detail) {
   console.warn("callback rejected", { status, code, detail });
-  return errorResponse(status, code, {
+  const res = errorResponse(status, code, {
     requestId: requestId(req),
     wwwAuthenticate: status === 401 ? 'Bearer error="invalid_token"' : undefined,
   });
+  // Burn the login-state cookie on every callback failure so a retry starts a
+  // clean login instead of re-presenting an already-consumed state.
+  res.headers.append("set-cookie", clearStateCookie());
+  return res;
 }
